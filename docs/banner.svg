@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="t d">
+  <title id="t">WWM Guqin Freeplay</title>
+  <desc id="d">Play any MIDI on the guqin in Where Winds Meet. Native Rust, about 6 MB.</desc>
+  <defs>
+    <filter id="raised" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="-10" dy="-10" stdDeviation="10" flood-color="#ffffff" flood-opacity="0.9"/>
+      <feDropShadow dx="10" dy="10" stdDeviation="10" flood-color="#a3b1c6" flood-opacity="0.65"/>
+    </filter>
+    <filter id="key" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="-4" dy="-4" stdDeviation="4" flood-color="#ffffff" flood-opacity="0.9"/>
+      <feDropShadow dx="4" dy="4" stdDeviation="4" flood-color="#a3b1c6" flood-opacity="0.6"/>
+    </filter>
+    <linearGradient id="pressed" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c3ccd8"/>
+      <stop offset="0.55" stop-color="#dde2ea"/>
+      <stop offset="1" stop-color="#f2f4f8"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="360" fill="#e0e5ec"/>
+  <rect x="40" y="40" width="1200" height="280" rx="36" fill="#e0e5ec" filter="url(#raised)"/>
+
+  <!-- Play button -->
+  <circle cx="150" cy="180" r="56" fill="#c8452a" filter="url(#key)"/>
+  <path d="M136 152 L176 180 L136 208 Z" fill="#ffffff"/>
+
+  <!-- Wordmark -->
+  <text x="236" y="165" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="58" font-weight="600" fill="#2f3a4a">WWM Guqin Freeplay</text>
+  <text x="238" y="214" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="25" fill="#5b6577">Play any MIDI on the guqin in Where Winds Meet</text>
+  <text x="238" y="256" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="19" fill="#5b6577">Native Rust · ~6 MB portable · Soft UI · 燕云十六声</text>
+
+  <!-- Qin board: 3 x 7 keys, a few pressed -->
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="15" fill="#2f3a4a" text-anchor="middle">
+    <g transform="translate(888 92)">
+      <rect x="0"   y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="48"  y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="96"  y="0" width="40" height="40" rx="10" fill="url(#pressed)"/>
+      <rect x="144" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="192" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="240" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="288" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <circle cx="129" cy="7" r="3.5" fill="#c8452a"/>
+      <text x="20" y="26">Q</text><text x="68" y="26">W</text><text x="116" y="26">E</text>
+      <text x="164" y="26">R</text><text x="212" y="26">T</text><text x="260" y="26">Y</text>
+      <text x="308" y="26">U</text>
+    </g>
+    <g transform="translate(888 150)">
+      <rect x="0"   y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="48"  y="0" width="40" height="40" rx="10" fill="url(#pressed)"/>
+      <rect x="96"  y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="144" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="192" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="240" y="0" width="40" height="40" rx="10" fill="url(#pressed)"/>
+      <rect x="288" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <circle cx="81" cy="7" r="3.5" fill="#c8452a"/>
+      <circle cx="273" cy="7" r="3.5" fill="#c8452a"/>
+      <text x="20" y="26">A</text><text x="68" y="26">S</text><text x="116" y="26">D</text>
+      <text x="164" y="26">F</text><text x="212" y="26">G</text><text x="260" y="26">H</text>
+      <text x="308" y="26">J</text>
+    </g>
+    <g transform="translate(888 208)">
+      <rect x="0"   y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="48"  y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="96"  y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="144" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="192" y="0" width="40" height="40" rx="10" fill="url(#pressed)"/>
+      <rect x="240" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <rect x="288" y="0" width="40" height="40" rx="10" fill="#e0e5ec" filter="url(#key)"/>
+      <circle cx="225" cy="7" r="3.5" fill="#c8452a"/>
+      <text x="20" y="26">Z</text><text x="68" y="26">X</text><text x="116" y="26">C</text>
+      <text x="164" y="26">V</text><text x="212" y="26">B</text><text x="260" y="26">N</text>
+      <text x="308" y="26">M</text>
+    </g>
+  </g>
+</svg>
