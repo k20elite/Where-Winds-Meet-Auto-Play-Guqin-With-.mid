@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The duplicate-hotkey test needs an interactive desktop session; CI runners may deny
+      # RegisterHotKey entirely, so it is skipped here and run locally.
+      - name: Test
+        run: cargo test -- --skip test_hotkey_thread_duplicate_spec
+
+      - name: Build release
+        run: cargo build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wwm-guqin
+          path: target/release/wwm-guqin.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/wwm-guqin.exe

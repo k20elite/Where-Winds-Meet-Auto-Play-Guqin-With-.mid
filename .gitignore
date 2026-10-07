@@ -1,2 +1,4 @@
 /target
 *.log
+*.stackdump
+wwm-guqin.json
