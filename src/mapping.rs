@@ -23,7 +23,7 @@ pub struct Stroke {
 }
 
 /// Instrument key layout mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum KeyMode {
     /// 21 natural keys (C-major heptatonic across 3 octaves).
     Natural21,
@@ -32,7 +32,7 @@ pub enum KeyMode {
 }
 
 /// Strategy for mapping out-of-scale or out-of-range notes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum NoteMode {
     /// Fold into 48..=83, snap to nearest natural (ties go down).
     Nearest,
