@@ -7,6 +7,7 @@ mod layout;
 mod library;
 mod mapping;
 mod midi;
+mod player;
 mod settings;
 
 fn main() {
