@@ -1,0 +1,18 @@
+[package]
+name = "wwm-guqin"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "wwm-guqin"
+path = "src/main.rs"
+
+[dependencies]
+midly = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
