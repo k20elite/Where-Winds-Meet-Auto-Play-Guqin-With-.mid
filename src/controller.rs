@@ -34,6 +34,7 @@ pub struct Controller<O: Out + Send + 'static> {
     dirty: bool,
     entries: Vec<Entry>,
     fav_mask: Vec<bool>,
+    revision: u64,
     queue: Queue,
     queue_items: Vec<usize>,
     rng: Rng,
@@ -71,6 +72,7 @@ impl<O: Out + Send + 'static> Controller<O> {
             dirty: false,
             entries: Vec::new(),
             fav_mask: Vec::new(),
+            revision: 0,
             queue: Queue::new(),
             queue_items: Vec::new(),
             rng: Rng::new(seed),
@@ -91,6 +93,12 @@ impl<O: Out + Send + 'static> Controller<O> {
             .iter()
             .map(|e| fav_set.contains(e.rel.as_str()))
             .collect();
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Counter bumped whenever entries, favorites, or the queue change (for UI caches).
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Rescan current library directory.
@@ -116,6 +124,7 @@ impl<O: Out + Send + 'static> Controller<O> {
         self.dirty = true;
         self.queue.clear();
         self.queue_items.clear();
+        self.revision = self.revision.wrapping_add(1);
         let _ = self.rescan();
     }
 
@@ -165,6 +174,7 @@ impl<O: Out + Send + 'static> Controller<O> {
             .unwrap_or(0);
         self.queue.set(queue_items.clone(), start_pos);
         self.queue_items = queue_items;
+        self.revision = self.revision.wrapping_add(1);
 
         self.load_and_play_current();
     }
@@ -397,6 +407,13 @@ impl<O: Out + Send + 'static> Controller<O> {
     /// Set playlist shuffle flag.
     pub fn set_shuffle(&mut self, shuffle: bool) {
         self.settings.shuffle = shuffle;
+        self.dirty = true;
+    }
+
+    /// Update settings that do not affect key output (theme, hotkeys, skip drums, ...).
+    pub fn update_settings(&mut self, f: impl FnOnce(&mut Settings)) {
+        f(&mut self.settings);
+        self.settings.sanitize();
         self.dirty = true;
     }
 
@@ -1129,5 +1146,70 @@ mod tests {
 
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
         assert_eq!(controller.settings().modifier_delay_ms, 50);
+    }
+
+    #[test]
+    fn test_update_settings_keeps_output_and_marks_dirty() {
+        let temp_dir = TestTempDir::new();
+        let settings_path = temp_dir.path().join("settings.json");
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let cc = Arc::clone(&call_count);
+
+        let mut controller = Controller::new(
+            Settings::default(),
+            settings_path.clone(),
+            move |_| {
+                cc.fetch_add(1, Ordering::SeqCst);
+                MockOut {
+                    recorder: MockRecorder::default(),
+                }
+            },
+            |_| {},
+        );
+
+        controller.update_settings(|s| s.theme = crate::settings::Theme::Dark);
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(controller.settings().theme, crate::settings::Theme::Dark);
+        assert_eq!(controller.save_if_dirty(), None);
+        assert!(settings_path.exists());
+    }
+
+    #[test]
+    fn test_revision_bumps_on_library_and_queue_changes() {
+        let temp_dir = TestTempDir::new();
+        let lib = temp_dir.path().join("lib");
+        fs::create_dir_all(&lib).unwrap();
+        write_test_midi(&lib.join("a.mid"), &[(0, 0x90, 60, 100), (10, 0x80, 60, 0)]);
+        write_test_midi(&lib.join("b.mid"), &[(0, 0x90, 62, 100), (10, 0x80, 62, 0)]);
+
+        let mut controller = Controller::new(
+            Settings::default(),
+            temp_dir.path().join("settings.json"),
+            |_| MockOut {
+                recorder: MockRecorder::default(),
+            },
+            |_| {},
+        );
+
+        let r0 = controller.revision();
+        controller.set_library_dir(lib);
+        let r1 = controller.revision();
+        assert!(r1 > r0, "set_library_dir must bump revision");
+
+        controller.toggle_favorite(0);
+        let r2 = controller.revision();
+        assert!(r2 > r1, "toggle_favorite must bump revision");
+
+        controller.play_entry(1, vec![0, 1]);
+        assert!(controller.revision() > r2, "play_entry must bump revision");
+
+        let r3 = controller.revision();
+        controller.set_speed(1.5);
+        assert_eq!(
+            controller.revision(),
+            r3,
+            "speed change must not bump revision"
+        );
     }
 }

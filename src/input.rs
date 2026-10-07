@@ -14,8 +14,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, VK_CONTROL, VK_SHIFT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
-    IsWindowVisible, PostMessageW, WM_KEYDOWN, WM_KEYUP,
+    EnumWindows, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindow, IsWindowVisible, PostMessageW, WM_KEYDOWN, WM_KEYUP,
 };
 
 /// Lowest-level keyboard event sink.
@@ -188,6 +188,7 @@ impl WindowSink {
     }
 
     /// Check if target game window currently exists.
+    #[allow(dead_code)] // reason: convenient inspection helper for background window sink
     pub fn is_found(&mut self) -> bool {
         self.finder.is_found()
     }
@@ -256,8 +257,28 @@ fn make_input(vk: u16, key_up: bool) -> INPUT {
     }
 }
 
+/// True when the foreground window belongs to this process (our own UI has focus).
+fn own_window_focused() -> bool {
+    // SAFETY: GetForegroundWindow has no preconditions; it may return null.
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    // SAFETY: hwnd came from the OS and pid is a valid out-pointer for this call.
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    // SAFETY: GetCurrentProcessId has no preconditions.
+    pid == unsafe { GetCurrentProcessId() }
+}
+
+// SendInput goes to whatever window has focus. Key-downs are dropped while our own window
+// is focused so playback never types into the app itself (search box, focused buttons).
+// Key-ups always pass so nothing can stay stuck down.
 impl KeySink for GlobalSink {
     fn key(&mut self, vk: u16, down: bool) {
+        if down && own_window_focused() {
+            return;
+        }
         let input = make_input(vk, !down);
         // SAFETY: SendInput sends hardware input event to active foreground window.
         unsafe {
@@ -266,6 +287,9 @@ impl KeySink for GlobalSink {
     }
 
     fn combo(&mut self, mod_vk: u16, vk: u16) {
+        if own_window_focused() {
+            return;
+        }
         let mut inputs = [
             make_input(mod_vk, false),
             make_input(vk, false),
@@ -285,6 +309,7 @@ impl KeySink for GlobalSink {
 /// Stroke driver translating musical strokes to keyboard events.
 pub struct Driver<S: KeySink> {
     sink: S,
+    #[allow(dead_code)] // reason: retained for introspection and future layout updates
     layout: KeyLayout,
     modifier_delay: Duration,
     vks: [Option<u16>; 21],
@@ -315,17 +340,20 @@ impl<S: KeySink> Driver<S> {
     }
 
     /// Update active keyboard layout.
+    #[allow(dead_code)] // reason: dynamic layout reconfiguration API
     pub fn set_layout(&mut self, layout: KeyLayout) {
         self.vks = compute_vks(&layout);
         self.layout = layout;
     }
 
     /// Update modifier delay before note key.
+    #[allow(dead_code)] // reason: dynamic timing reconfiguration API
     pub fn set_modifier_delay(&mut self, d: Duration) {
         self.modifier_delay = d;
     }
 
     /// Immutable reference to underlying sink (for testing).
+    #[allow(dead_code)] // reason: test inspection helper
     pub fn sink(&self) -> &S {
         &self.sink
     }
@@ -459,6 +487,7 @@ impl Output {
     }
 
     /// Check if target game window is found.
+    #[allow(dead_code)] // reason: convenient inspection helper on Output enum
     pub fn game_found(&mut self) -> bool {
         match self {
             Output::Window(d) => d.sink.is_found(),

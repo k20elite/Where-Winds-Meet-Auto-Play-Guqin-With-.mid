@@ -258,6 +258,7 @@ impl<O: Out> Engine<O> {
     }
 
     /// Reference to output backend.
+    #[allow(dead_code)] // reason: engine inspection accessor
     pub fn out(&self) -> &O {
         &self.out
     }
@@ -416,6 +417,7 @@ pub enum Cmd<O: Out = crate::input::Output> {
     /// Start or resume playback.
     Play,
     /// Pause playback.
+    #[allow(dead_code)] // reason: command variant for direct pause
     Pause,
     /// Toggle play/pause.
     Toggle,
@@ -454,6 +456,7 @@ pub struct GenericPlayer<O: Out + Send + 'static> {
 }
 
 /// Standard player with concrete Output sink.
+#[allow(dead_code)] // reason: convenient type alias for non-generic player
 pub type Player = GenericPlayer<crate::input::Output>;
 
 impl<O: Out + Send + 'static> GenericPlayer<O> {

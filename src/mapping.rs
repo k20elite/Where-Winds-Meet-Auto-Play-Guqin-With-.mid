@@ -48,6 +48,7 @@ pub enum NoteMode {
 
 impl NoteMode {
     /// All available NoteMode variants.
+    #[allow(dead_code)] // reason: convenient collection of all note mapping variants
     pub const ALL: [NoteMode; 5] = [
         NoteMode::Nearest,
         NoteMode::SnapUp,

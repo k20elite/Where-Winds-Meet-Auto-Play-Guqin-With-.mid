@@ -380,6 +380,7 @@ impl Queue {
     }
 
     /// Returns true if queue has no tracks.
+    #[allow(dead_code)] // reason: standard container predicate for Queue
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
