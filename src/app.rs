@@ -146,6 +146,15 @@ pub fn format_time(seconds: f64) -> String {
     format!("{:02}:{:02}", s / 60, s % 60)
 }
 
+/// "1 song" / "N songs".
+pub fn song_count(n: usize) -> String {
+    if n == 1 {
+        "1 song".to_owned()
+    } else {
+        format!("{n} songs")
+    }
+}
+
 /// Jianpu label for a key slot: (degree 1..=7, octave -1 low / 0 mid / +1 high).
 pub fn jianpu(slot: u8) -> (u8, i8) {
     (slot % 7 + 1, (slot / 7) as i8 - 1)
@@ -328,7 +337,7 @@ impl App {
                     UiAction::PlayEntry(i, q) => c.play_entry(i, q),
                     UiAction::ToggleFavorite(i) => c.toggle_favorite(i),
                     UiAction::Rescan => match c.rescan() {
-                        Ok(n) => toasts.push(format!("Found {n} songs")),
+                        Ok(n) => toasts.push(format!("Found {}", song_count(n))),
                         Err(e) => toasts.push(e),
                     },
                     UiAction::ChooseFolder => folder = Some(()),
@@ -357,7 +366,7 @@ impl App {
                     c.set_library_dir(dir);
                     c.entries().len()
                 };
-                self.toast(format!("Found {n} songs"));
+                self.toast(format!("Found {}", song_count(n)));
             }
         }
         if restart_hotkeys {
@@ -623,7 +632,7 @@ impl App {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
-                        RichText::new(format!("{} songs", self.list.indices.len()))
+                        RichText::new(song_count(self.list.indices.len()))
                             .color(pal.text_secondary),
                     );
                 });
@@ -682,7 +691,10 @@ impl App {
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_size(Vec2::new(520.0, 560.0))
+            .default_size(Vec2::new(
+                540.0,
+                (ctx.content_rect().height() - 60.0).max(420.0),
+            ))
             .frame(
                 Frame::NONE
                     .fill(pal.base)
@@ -1130,8 +1142,10 @@ fn keyboard_card(ui: &mut Ui, pal: &Palette, snap: &Snapshot, reduced_motion: bo
         card_title(ui, pal, "QIN BOARD");
         let gap = 8.0;
         let tile = ((ui.available_width() - 6.0 * gap) / 7.0).clamp(38.0, 58.0);
+        let indent = ((ui.available_width() - 7.0 * tile - 6.0 * gap) * 0.5).max(0.0);
         for row in [2u8, 1, 0] {
             ui.horizontal(|ui| {
+                ui.add_space(indent);
                 ui.spacing_mut().item_spacing.x = gap;
                 for degree in 0..7u8 {
                     let slot = row * 7 + degree;
@@ -1189,14 +1203,14 @@ fn key_tile(
     let key_text = RichText::new(key.to_ascii_uppercase().to_string());
     let font = FontId::proportional(size * 0.32);
     painter.text(
-        rect.center() - Vec2::new(0.0, size * 0.14),
+        rect.center() - Vec2::new(0.0, size * 0.2),
         Align2::CENTER_CENTER,
         key_text.text(),
         font,
         pal.text,
     );
     let (degree, octave) = jianpu(slot);
-    let num_pos = rect.center() + Vec2::new(0.0, size * 0.22);
+    let num_pos = rect.center() + Vec2::new(0.0, size * 0.24);
     let deg_color = if active { pal.text } else { pal.text_secondary };
     painter.text(
         num_pos,
@@ -1206,7 +1220,7 @@ fn key_tile(
         deg_color,
     );
     if octave != 0 {
-        let dy = size * 0.15 * -(octave as f32);
+        let dy = size * 0.16 * -(octave as f32);
         painter.circle_filled(num_pos + Vec2::new(0.0, dy), 1.6, deg_color);
     }
 }
@@ -1220,7 +1234,7 @@ fn tracks_card(
 ) {
     neu::neu_card(ui, pal, |ui| {
         ui.horizontal(|ui| {
-            let arrow = if *open { "▾ Tracks" } else { "▸ Tracks" };
+            let arrow = if *open { "Hide tracks" } else { "Show tracks" };
             if ui.add(NeuButton::new(arrow, *pal)).clicked() {
                 *open = !*open;
             }
@@ -1335,6 +1349,13 @@ mod tests {
         assert_eq!(format_time(3600.0), "60:00");
         assert_eq!(format_time(-5.0), "00:00");
         assert_eq!(format_time(f64::NAN), "00:00");
+    }
+
+    #[test]
+    fn song_count_pluralises() {
+        assert_eq!(song_count(0), "0 songs");
+        assert_eq!(song_count(1), "1 song");
+        assert_eq!(song_count(25), "25 songs");
     }
 
     #[test]
