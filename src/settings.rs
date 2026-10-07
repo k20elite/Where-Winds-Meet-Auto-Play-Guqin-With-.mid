@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 /// Input injection backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum InputBackend {
-    /// Post messages directly to game window.
-    #[default]
-    Window,
     /// Send input globally via Windows SendInput.
+    #[default]
     Global,
+    /// Background mode: posts to the game window; Shift/Ctrl may not register.
+    Window,
 }
 
 /// Repeat mode for playlist playback.
@@ -129,7 +129,7 @@ impl Default for Settings {
             speed: 1.0,
             modifier_delay_ms: 0,
             key_hold_ms: 25,
-            backend: InputBackend::Window,
+            backend: InputBackend::Global,
             window_keywords: vec![
                 "Where Winds Meet".to_string(),
                 "燕云十六声".to_string(),
@@ -426,5 +426,11 @@ mod tests {
         };
         let m2 = s3.mapper(2);
         assert_eq!(m2.transpose, -4);
+    }
+
+    #[test]
+    fn test_default_backend_is_global() {
+        assert_eq!(Settings::default().backend, InputBackend::Global);
+        assert_eq!(InputBackend::default(), InputBackend::Global);
     }
 }
