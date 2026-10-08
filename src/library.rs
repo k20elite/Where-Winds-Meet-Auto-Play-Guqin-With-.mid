@@ -280,6 +280,11 @@ impl Queue {
         self.pos.and_then(|p| self.items.get(p).copied())
     }
 
+    /// Position of the current item within the queue, if any.
+    pub fn position(&self) -> Option<usize> {
+        self.pos
+    }
+
     /// Advance to next song considering Repeat mode and optional shuffle RNG.
     pub fn next(&mut self, repeat: Repeat, shuffle_rng: Option<&mut Rng>) -> Option<usize> {
         if self.items.is_empty() {
