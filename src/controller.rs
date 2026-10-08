@@ -6,8 +6,8 @@ use crate::mapping::{self, KeyMode, Mapper, NoteMode};
 use crate::midi::{self, Song};
 use crate::player::{Cmd, GenericPlayer, Out, PlayerEvent, SharedStatus};
 use crate::settings::{Repeat, Settings};
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Position threshold (3 seconds) for restarting vs previous track.
@@ -15,8 +15,10 @@ pub const PREV_RESTART_THRESHOLD_US: u64 = 3_000_000;
 
 /// Currently loaded and active playback item.
 pub struct NowPlaying {
-    /// Index into Controller's library entries.
-    pub entry: usize,
+    /// Index into Controller's library entries; None once the file left the library.
+    pub entry: Option<usize>,
+    /// File path, used to re-locate the entry after a rescan.
+    pub path: PathBuf,
     /// Song title.
     pub title: String,
     /// Parsed MIDI song structure.
@@ -110,12 +112,47 @@ impl<O: Out + Send + 'static> Controller<O> {
         match library::scan(dir) {
             Ok(scanned) => {
                 let count = scanned.len();
-                self.entries = scanned;
+                let old = std::mem::replace(&mut self.entries, scanned);
+                self.remap_indices(&old);
                 self.rebuild_fav_mask();
                 Ok(count)
             }
             Err(e) => Err(format!("failed to scan library: {e}")),
         }
+    }
+
+    /// Re-point now-playing and queue indices from `old` entries to the rescanned ones by path.
+    fn remap_indices(&mut self, old: &[Entry]) {
+        let by_path: HashMap<&Path, usize> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.path.as_path(), i))
+            .collect();
+
+        if let Some(np) = &mut self.now_playing {
+            np.entry = by_path.get(np.path.as_path()).copied();
+        }
+
+        let old_pos = self.queue.position();
+        let mut new_pos = None;
+        let mut kept_before = 0usize;
+        let mut items = Vec::with_capacity(self.queue_items.len());
+        for (pos, &idx) in self.queue_items.iter().enumerate() {
+            let Some(&new_idx) = old.get(idx).and_then(|e| by_path.get(e.path.as_path())) else {
+                continue;
+            };
+            if Some(pos) == old_pos {
+                new_pos = Some(items.len());
+            } else if old_pos.is_some_and(|p| pos < p) {
+                kept_before += 1;
+            }
+            items.push(new_idx);
+        }
+        // Current item gone: park on the item before it so next() continues in order.
+        let start = new_pos.unwrap_or(kept_before.saturating_sub(1));
+        self.queue.set(items.clone(), start);
+        self.queue_items = items;
     }
 
     /// Set new library directory, mark dirty, clear queue, and rescan.
@@ -215,7 +252,8 @@ impl<O: Out + Send + 'static> Controller<O> {
             };
 
             let title = entry.title.clone();
-            match midi::load_file(&entry.path) {
+            let path = entry.path.clone();
+            match midi::load_file(&path) {
                 Ok(song) => {
                     let tracks: Vec<bool> = song
                         .tracks
@@ -233,7 +271,8 @@ impl<O: Out + Send + 'static> Controller<O> {
                     self.player.send(Cmd::Play);
 
                     self.now_playing = Some(NowPlaying {
-                        entry: entry_idx,
+                        entry: Some(entry_idx),
+                        path,
                         title,
                         song: song_arc,
                         auto_shift,
@@ -703,7 +742,7 @@ mod tests {
         );
 
         // Good song (index 1) should now be playing
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(1));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
         assert!(wait_for_state(
             controller.status(),
             PlayState::Playing,
@@ -731,6 +770,48 @@ mod tests {
             PlayState::Idle,
             Duration::from_millis(500)
         ));
+    }
+
+    #[test]
+    fn test_rescan_remaps_now_playing_and_queue() {
+        let temp_dir = TestTempDir::new();
+        let lib_dir = temp_dir.path().join("midi");
+        fs::create_dir_all(&lib_dir).unwrap();
+        write_test_midi(&lib_dir.join("b.mid"), &[(0, 0x90, 60, 64)]);
+        write_test_midi(&lib_dir.join("c.mid"), &[(0, 0x90, 62, 64)]);
+
+        let settings = Settings {
+            library_dir: Some(lib_dir.clone()),
+            ..Default::default()
+        };
+        let mut controller = Controller::new(
+            settings,
+            temp_dir.path().join("settings.json"),
+            |_| MockOut {
+                recorder: MockRecorder::default(),
+            },
+            |_| {},
+        );
+
+        controller.play_entry(1, vec![0, 1]);
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
+
+        // New file sorts first: every index shifts by one
+        write_test_midi(&lib_dir.join("a.mid"), &[(0, 0x90, 64, 64)]);
+        controller.rescan().unwrap();
+        let np_entry = controller.now_playing().and_then(|np| np.entry);
+        assert_eq!(np_entry, Some(2));
+        assert_eq!(controller.entries()[2].title, "c");
+        assert_eq!(controller.queue_items(), &[1, 2]);
+
+        // Different folder: playing song is no longer in the library
+        let other_dir = temp_dir.path().join("other");
+        fs::create_dir_all(&other_dir).unwrap();
+        write_test_midi(&other_dir.join("x.mid"), &[(0, 0x90, 60, 64)]);
+        controller.set_library_dir(other_dir);
+        assert!(controller.now_playing().is_some());
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), None);
+        assert!(controller.queue_items().is_empty());
     }
 
     #[test]
@@ -767,7 +848,7 @@ mod tests {
 
         // Queue [broken (0), good (1)] starting at broken with Repeat::One
         controller.play_entry(0, vec![0, 1]);
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(1));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
         assert!(wait_for_state(
             controller.status(),
             PlayState::Playing,
@@ -929,7 +1010,7 @@ mod tests {
 
         assert!(controller.now_playing().is_none());
         controller.toggle();
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(0));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(0));
         assert_eq!(controller.queue_items(), &[0, 1]);
     }
 
@@ -1030,13 +1111,13 @@ mod tests {
         );
 
         controller.play_entry(0, vec![0, 1, 2]);
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(0));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(0));
 
         controller.handle_action(Action::Next);
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(1));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
 
         controller.handle_action(Action::Next);
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(2));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(2));
     }
 
     #[test]
@@ -1069,15 +1150,15 @@ mod tests {
         );
 
         controller.play_entry(1, vec![0, 1]);
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(1));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
 
         // When pos <= 3s, prev() jumps to item 0
         controller.prev();
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(0));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(0));
 
         // Move to item 1 again
         controller.next();
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(1));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
 
         // Simulate position > 3 seconds via atomic status update directly
         controller
@@ -1086,7 +1167,7 @@ mod tests {
             .store(4_000_000, Ordering::SeqCst);
         controller.prev();
         // Should NOT jump to item 0, stays on item 1
-        assert_eq!(controller.now_playing().map(|np| np.entry), Some(1));
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
     }
 
     #[test]

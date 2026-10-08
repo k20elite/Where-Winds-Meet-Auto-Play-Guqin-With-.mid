@@ -262,7 +262,7 @@ impl App {
             .unwrap_or_default();
         let snap = Snapshot {
             title: np.map(|n| n.title.clone()),
-            playing_entry: np.map(|n| n.entry),
+            playing_entry: np.and_then(|n| n.entry),
             state: status.state(),
             pos_us: status.position_us.load(Ordering::Relaxed),
             dur_us: status.duration_us.load(Ordering::Relaxed),
