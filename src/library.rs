@@ -1,6 +1,7 @@
 //! Music library scanning, Vietnamese diacritic-folding search, and playback queue.
 
-use crate::settings::Repeat;
+use crate::settings::{Repeat, SortOrder};
+use std::cmp::Reverse;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -16,6 +17,8 @@ pub struct Entry {
     pub title: String,
     /// File size in bytes.
     pub size: u64,
+    /// Last modified time, seconds since the Unix epoch (0 if unknown).
+    pub modified: u64,
     /// Precomputed folded search key for fast query matching.
     search_key: String,
 }
@@ -31,6 +34,7 @@ impl Entry {
             rel,
             title,
             size,
+            modified: 0,
             search_key,
         }
     }
@@ -116,7 +120,14 @@ fn walk_dir(root: &Path, current: &Path, depth: usize, out: &mut Vec<Entry>) {
                 .unwrap_or("")
                 .to_string();
 
-            out.push(Entry::new(path, rel_path, title, size));
+            let modified = symlink_meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
+            let mut entry = Entry::new(path, rel_path, title, size);
+            entry.modified = modified;
+            out.push(entry);
         }
     }
 }
@@ -185,6 +196,25 @@ pub fn filter(entries: &[Entry], query: &str) -> Vec<usize> {
             }
         })
         .collect()
+}
+
+/// Reorder entry indices for display. Assumes `entries` is in scan order (title A to Z).
+pub fn sort_indices(entries: &[Entry], indices: &mut [usize], order: SortOrder) {
+    match order {
+        SortOrder::NameAsc => indices.sort_unstable(),
+        SortOrder::NameDesc => indices.sort_unstable_by(|a, b| b.cmp(a)),
+        SortOrder::Type => indices.sort_by_cached_key(|&i| {
+            let ext = entries
+                .get(i)
+                .and_then(|e| e.path.extension())
+                .map(|x| x.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            (ext, i)
+        }),
+        SortOrder::Date => {
+            indices.sort_by_key(|&i| (Reverse(entries.get(i).map_or(0, |e| e.modified)), i))
+        }
+    }
 }
 
 /// Fast pseudo-random number generator using xorshift64.
@@ -293,6 +323,11 @@ impl Queue {
             return None;
         }
 
+        if self.pos.is_none() && shuffle_rng.is_none() {
+            // Nothing current (fresh, ended, or current item removed): start from the top.
+            self.pos = Some(0);
+            return self.current();
+        }
         let curr_pos = self.pos.unwrap_or(0);
 
         if repeat == Repeat::One {
@@ -370,6 +405,35 @@ impl Queue {
         let prev = curr.saturating_sub(1);
         self.pos = Some(prev);
         self.current()
+    }
+
+    /// Append an item; it joins the current shuffle round.
+    pub fn push(&mut self, item: usize) {
+        self.items.push(item);
+        self.pending_shuffle.push(self.items.len() - 1);
+    }
+
+    /// Remove the item at `pos`. If it was current, the next call to `next()` plays the
+    /// item that followed it.
+    pub fn remove(&mut self, pos: usize) {
+        if pos >= self.items.len() {
+            return;
+        }
+        self.items.remove(pos);
+        self.pending_shuffle.retain(|&p| p != pos);
+        for p in &mut self.pending_shuffle {
+            if *p > pos {
+                *p -= 1;
+            }
+        }
+        self.pos = match self.pos {
+            Some(cur) if cur > pos => Some(cur - 1),
+            Some(cur) if cur == pos => pos.checked_sub(1),
+            other => other,
+        };
+        if self.items.is_empty() {
+            self.pos = None;
+        }
     }
 
     /// Clear all queue items and reset position.
@@ -578,6 +642,51 @@ mod tests {
             }
             assert_eq!(round_seen.len(), 5, "each round of 5 covers all 5 items");
         }
+    }
+
+    #[test]
+    fn test_queue_push_remove() {
+        let mut q = Queue::new();
+        q.set(vec![10, 20, 30], 1);
+        q.push(40);
+        assert_eq!(q.len(), 4);
+
+        // Removing an item before the current one keeps the current item
+        q.remove(0);
+        assert_eq!(q.current(), Some(20));
+
+        // Removing the current item: next() plays the one that followed it
+        q.remove(0);
+        assert_eq!(q.next(Repeat::Off, None), Some(30));
+        assert_eq!(q.next(Repeat::Off, None), Some(40));
+
+        q.remove(1);
+        q.remove(0);
+        assert!(q.is_empty());
+        assert_eq!(q.current(), None);
+
+        // Out of range is ignored
+        q.remove(5);
+    }
+
+    #[test]
+    fn test_sort_indices() {
+        let mk = |name: &str, modified: u64| {
+            let mut e = Entry::new(PathBuf::from(name), name.to_string(), name.to_string(), 100);
+            e.modified = modified;
+            e
+        };
+        // Scan order is title A to Z
+        let list = vec![mk("a.midi", 5), mk("b.mid", 9), mk("c.mid", 1)];
+        let sorted = |order| {
+            let mut v = vec![2, 0, 1];
+            sort_indices(&list, &mut v, order);
+            v
+        };
+        assert_eq!(sorted(SortOrder::NameAsc), vec![0, 1, 2]);
+        assert_eq!(sorted(SortOrder::NameDesc), vec![2, 1, 0]);
+        assert_eq!(sorted(SortOrder::Type), vec![1, 2, 0]);
+        assert_eq!(sorted(SortOrder::Date), vec![1, 0, 2]);
     }
 
     #[test]

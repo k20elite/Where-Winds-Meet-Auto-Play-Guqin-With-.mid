@@ -9,7 +9,7 @@ use crate::library;
 use crate::mapping::{KeyMode, NoteMode};
 use crate::neu::{self, NeuButton, Palette};
 use crate::player::PlayState;
-use crate::settings::{Hotkeys, InputBackend, Repeat, Settings, Theme};
+use crate::settings::{Hotkeys, InputBackend, Repeat, Settings, SortOrder, Theme};
 use eframe::egui::{
     self, Align, Align2, CornerRadius, FontId, Frame, Id, Layout, Order, Pos2, Rect, RichText,
     ScrollArea, Sense, Ui, Vec2,
@@ -50,6 +50,11 @@ enum UiAction {
     Track(usize, bool),
     PlayEntry(usize, Vec<usize>),
     ToggleFavorite(usize),
+    AddToQueue(usize),
+    RemoveFromQueue(usize),
+    Sort(SortOrder),
+    AutoNext(bool),
+    NextDelay(u16),
     Rescan,
     ChooseFolder,
     Theme(Theme),
@@ -88,6 +93,10 @@ struct Snapshot {
     speed: f32,
     repeat: Repeat,
     shuffle: bool,
+    auto_next: bool,
+    next_delay_s: u16,
+    next_in: Option<Duration>,
+    sort: SortOrder,
     theme: Theme,
     backend: InputBackend,
     layout: LayoutPreset,
@@ -103,7 +112,7 @@ struct Snapshot {
 /// Cached visible library rows; recomputed only when its key changes.
 #[derive(Default)]
 struct ListCache {
-    key: Option<(u64, u8, String)>,
+    key: Option<(u64, u8, SortOrder, String)>,
     indices: Vec<usize>,
 }
 
@@ -276,6 +285,12 @@ impl App {
             speed: s.speed,
             repeat: s.repeat,
             shuffle: s.shuffle,
+            auto_next: s.auto_next,
+            next_delay_s: s.next_delay_s,
+            next_in: c
+                .next_in()
+                .filter(|_| status.state() == PlayState::Finished),
+            sort: s.sort,
             theme: s.theme,
             backend: s.backend,
             layout: s.layout,
@@ -288,13 +303,22 @@ impl App {
             tracks,
         };
 
-        let key = (c.revision(), tab_code(self.tab), self.query.clone());
+        let key = (
+            c.revision(),
+            tab_code(self.tab),
+            snap.sort,
+            self.query.clone(),
+        );
         if self.list.key.as_ref() != Some(&key) {
-            let base: Vec<usize> = match self.tab {
+            let mut base: Vec<usize> = match self.tab {
                 Tab::All => (0..c.entries().len()).collect(),
                 Tab::Favorites => c.favorite_indices(),
                 Tab::Queue => c.queue_items().to_vec(),
             };
+            // The queue keeps its play order; only library views are sorted.
+            if self.tab != Tab::Queue {
+                library::sort_indices(c.entries(), &mut base, snap.sort);
+            }
             self.list.indices = if self.query.trim().is_empty() {
                 base
             } else {
@@ -336,6 +360,15 @@ impl App {
                     UiAction::Track(i, b) => c.set_track_enabled(i, b),
                     UiAction::PlayEntry(i, q) => c.play_entry(i, q),
                     UiAction::ToggleFavorite(i) => c.toggle_favorite(i),
+                    UiAction::AddToQueue(i) => {
+                        if c.add_to_queue(i) {
+                            toasts.push("Added to queue".to_owned());
+                        }
+                    }
+                    UiAction::RemoveFromQueue(i) => c.remove_from_queue(i),
+                    UiAction::Sort(o) => c.update_settings(|s| s.sort = o),
+                    UiAction::AutoNext(b) => c.update_settings(|s| s.auto_next = b),
+                    UiAction::NextDelay(d) => c.update_settings(|s| s.next_delay_s = d),
                     UiAction::Rescan => match c.rescan() {
                         Ok(n) => toasts.push(format!("Found {}", song_count(n))),
                         Err(e) => toasts.push(e),
@@ -449,6 +482,9 @@ impl eframe::App for App {
         };
         if snap.state == PlayState::Playing {
             ctx.request_repaint_after(PLAYING_REPAINT);
+        }
+        if snap.next_in.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
 
         let mut actions = Vec::new();
@@ -637,6 +673,28 @@ impl App {
                     );
                 });
             });
+            if self.tab != Tab::Queue {
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    hint(ui, pal, "Sort");
+                    ui.add_space(4.0);
+                    for (o, name) in [
+                        (SortOrder::NameAsc, "A–Z"),
+                        (SortOrder::NameDesc, "Z–A"),
+                        (SortOrder::Type, "Type"),
+                        (SortOrder::Date, "Date"),
+                    ] {
+                        if ui
+                            .add(NeuButton::new(name, *pal).selected(snap.sort == o))
+                            .clicked()
+                            && snap.sort != o
+                        {
+                            actions.push(UiAction::Sort(o));
+                        }
+                        ui.add_space(4.0);
+                    }
+                });
+            }
             ui.add_space(12.0);
 
             if !snap.has_library {
@@ -654,12 +712,14 @@ impl App {
 
             let indices = &self.list.indices;
             let shared = &self.controller;
+            let queue_tab = self.tab == Tab::Queue;
             ScrollArea::vertical()
                 .id_salt("library")
                 .auto_shrink([false, false])
                 .show_rows(ui, ROW_HEIGHT, indices.len(), |ui, range| {
-                    let rows: Vec<(usize, String, bool)> = {
+                    let rows: Vec<(usize, String, bool, bool)> = {
                         let c = lock(shared);
+                        let queued = c.queue_items();
                         indices[range]
                             .iter()
                             .map(|&i| {
@@ -668,12 +728,19 @@ impl App {
                                     .get(i)
                                     .map(|e| e.title.clone())
                                     .unwrap_or_default();
-                                (i, title, c.is_favorite(i))
+                                (i, title, c.is_favorite(i), queued.contains(&i))
                             })
                             .collect()
                     };
-                    for (idx, title, fav) in rows {
-                        library_row(ui, pal, idx, &title, fav, snap, indices, actions);
+                    for (idx, title, fav, in_queue) in rows {
+                        let row = Row {
+                            idx,
+                            title: &title,
+                            fav,
+                            in_queue,
+                            queue_tab,
+                        };
+                        library_row(ui, pal, &row, snap, indices, actions);
                     }
                 });
         });
@@ -1012,13 +1079,16 @@ fn now_playing_card(ui: &mut Ui, pal: &Palette, snap: &Snapshot, actions: &mut V
             }
         });
         ui.add_space(4.0);
-        let state_text = match snap.state {
-            PlayState::Playing => "Playing",
-            PlayState::Paused => "Paused",
-            PlayState::Finished => "Finished",
-            PlayState::Idle => "Stopped",
+        let state_text = match (snap.state, snap.next_in) {
+            (PlayState::Finished, Some(left)) if !left.is_zero() => {
+                format!("Next song in {}s", left.as_secs() + 1)
+            }
+            (PlayState::Playing, _) => "Playing".to_owned(),
+            (PlayState::Paused, _) => "Paused".to_owned(),
+            (PlayState::Finished, _) => "Finished".to_owned(),
+            (PlayState::Idle, _) => "Stopped".to_owned(),
         };
-        ui.vertical_centered(|ui| hint(ui, pal, state_text));
+        ui.vertical_centered(|ui| hint(ui, pal, &state_text));
     });
 }
 
@@ -1133,6 +1203,23 @@ fn controls_card(ui: &mut Ui, pal: &Palette, snap: &Snapshot, actions: &mut Vec<
             if neu::neu_toggle(ui, &mut shuffle, pal, "Shuffle").changed() {
                 actions.push(UiAction::Shuffle(shuffle));
             }
+        });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            row_label(ui, pal, "Next song", 86.0);
+            let mut auto = snap.auto_next;
+            if neu::neu_toggle(ui, &mut auto, pal, "Auto-play").changed() {
+                actions.push(UiAction::AutoNext(auto));
+            }
+        });
+        let mut delay = snap.next_delay_s as f32;
+        ui.horizontal(|ui| {
+            row_label(ui, pal, "Gap", 86.0);
+            let w = (ui.available_width() - 60.0).max(80.0);
+            if neu::neu_slider(ui, &mut delay, 0.0..=60.0, pal, w).changed() {
+                actions.push(UiAction::NextDelay(delay.round() as u16));
+            }
+            ui.label(RichText::new(format!("{} s", snap.next_delay_s)).color(pal.text_secondary));
         });
     });
 }
@@ -1263,26 +1350,56 @@ fn tracks_card(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One library list row.
+struct Row<'a> {
+    idx: usize,
+    title: &'a str,
+    fav: bool,
+    in_queue: bool,
+    /// Row is shown in the Queue tab (offers remove instead of add).
+    queue_tab: bool,
+}
+
 fn library_row(
     ui: &mut Ui,
     pal: &Palette,
-    idx: usize,
-    title: &str,
-    fav: bool,
+    row: &Row<'_>,
     snap: &Snapshot,
     queue: &[usize],
     actions: &mut Vec<UiAction>,
 ) {
+    let Row {
+        idx,
+        title,
+        fav,
+        in_queue,
+        queue_tab,
+    } = *row;
     let size = Vec2::new(ui.available_width(), ROW_HEIGHT - 4.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let star_rect = Rect::from_center_size(
         rect.right_center() - Vec2::new(22.0, 0.0),
         Vec2::splat(30.0),
     );
+    let queue_rect = star_rect.translate(Vec2::new(-32.0, 0.0));
     let star = ui.interact(star_rect, Id::new(("star", idx)), Sense::click());
+    let queue_btn = ui.interact(queue_rect, Id::new(("queue", idx)), Sense::click());
+    let (queue_glyph, queue_tip) = if queue_tab {
+        ("×", "Remove from queue")
+    } else if in_queue {
+        ("✔", "In queue")
+    } else {
+        ("+", "Add to queue")
+    };
+    let queue_btn = queue_btn.on_hover_text(queue_tip);
     if star.clicked() {
         actions.push(UiAction::ToggleFavorite(idx));
+    } else if queue_btn.clicked() {
+        if queue_tab {
+            actions.push(UiAction::RemoveFromQueue(idx));
+        } else if !in_queue {
+            actions.push(UiAction::AddToQueue(idx));
+        }
     } else if resp.clicked() {
         actions.push(UiAction::PlayEntry(idx, queue.to_vec()));
     }
@@ -1312,7 +1429,7 @@ fn library_row(
     let galley = egui::WidgetText::from(text).into_galley(
         ui,
         Some(egui::TextWrapMode::Truncate),
-        rect.width() - 70.0,
+        rect.width() - 102.0,
         egui::TextStyle::Body,
     );
     painter.galley(
@@ -1332,7 +1449,22 @@ fn library_row(
         FontId::proportional(17.0),
         color,
     );
-    if resp.has_focus() || star.has_focus() {
+    if queue_btn.hovered() {
+        neu::paint_raised(painter, queue_rect, CornerRadius::same(10), pal, 0.3);
+    }
+    let queue_color = if in_queue && !queue_tab {
+        pal.accent
+    } else {
+        pal.text_secondary
+    };
+    painter.text(
+        queue_rect.center(),
+        Align2::CENTER_CENTER,
+        queue_glyph,
+        FontId::proportional(18.0),
+        queue_color,
+    );
+    if resp.has_focus() || star.has_focus() || queue_btn.has_focus() {
         neu::paint_focus_ring(painter, rect, cr, pal);
     }
 }

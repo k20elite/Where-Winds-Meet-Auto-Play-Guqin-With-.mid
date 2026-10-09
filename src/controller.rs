@@ -9,6 +9,7 @@ use crate::settings::{Repeat, Settings};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Position threshold (3 seconds) for restarting vs previous track.
 pub const PREV_RESTART_THRESHOLD_US: u64 = 3_000_000;
@@ -41,6 +42,11 @@ pub struct Controller<O: Out + Send + 'static> {
     queue_items: Vec<usize>,
     rng: Rng,
     now_playing: Option<NowPlaying>,
+    /// Bumped on every user or queue transport change; a pending auto-advance only
+    /// fires if it still matches.
+    play_gen: u64,
+    /// When the pending auto-advance fires, if one is armed.
+    next_at: Option<Instant>,
     player: GenericPlayer<O>,
     notice: Option<String>,
     make_output: Box<dyn Fn(&Settings) -> O + Send>,
@@ -79,6 +85,8 @@ impl<O: Out + Send + 'static> Controller<O> {
             queue_items: Vec::new(),
             rng: Rng::new(seed),
             now_playing: None,
+            play_gen: 0,
+            next_at: None,
             player,
             notice: None,
             make_output: Box::new(make_output),
@@ -229,7 +237,14 @@ impl<O: Out + Send + 'static> Controller<O> {
         mapping::auto_transpose(&filtered_events, key_mode)
     }
 
+    /// Invalidate any pending auto-advance.
+    fn touch(&mut self) {
+        self.play_gen = self.play_gen.wrapping_add(1);
+        self.next_at = None;
+    }
+
     fn load_and_play_current(&mut self) {
+        self.touch();
         let max_attempts = self.queue.len();
         if max_attempts == 0 {
             return;
@@ -291,10 +306,13 @@ impl<O: Out + Send + 'static> Controller<O> {
         self.stop();
     }
 
-    /// Toggle play / pause, or play entry 0 if nothing loaded.
+    /// Toggle play / pause. With nothing loaded, play the queue, else the whole library.
     pub fn toggle(&mut self) {
+        self.touch();
         if self.now_playing.is_none() {
-            if !self.entries.is_empty() {
+            if let Some(&first) = self.queue_items.first() {
+                self.play_entry(first, self.queue_items.clone());
+            } else if !self.entries.is_empty() {
                 let all_items: Vec<usize> = (0..self.entries.len()).collect();
                 self.play_entry(0, all_items);
             }
@@ -305,6 +323,7 @@ impl<O: Out + Send + 'static> Controller<O> {
 
     /// Stop playback and release keys.
     pub fn stop(&mut self) {
+        self.touch();
         self.player.send(Cmd::Stop);
     }
 
@@ -330,6 +349,7 @@ impl<O: Out + Send + 'static> Controller<O> {
             .position_us
             .load(std::sync::atomic::Ordering::Relaxed);
         if pos_us > PREV_RESTART_THRESHOLD_US {
+            self.touch();
             self.player.send(Cmd::Seek(0));
         } else if self.queue.prev().is_some() {
             self.load_and_play_current();
@@ -338,7 +358,53 @@ impl<O: Out + Send + 'static> Controller<O> {
 
     /// Seek playback position in microseconds.
     pub fn seek(&mut self, pos_us: u64) {
+        self.touch();
         self.player.send(Cmd::Seek(pos_us));
+    }
+
+    /// A song ended: arm the gap before the next one. Returns the wait and a token for
+    /// `advance_if_current`, or None when auto-next is off (Repeat One still loops).
+    pub fn schedule_advance(&mut self) -> Option<(Duration, u64)> {
+        if !self.settings.auto_next && self.settings.repeat != Repeat::One {
+            return None;
+        }
+        let delay = Duration::from_secs(self.settings.next_delay_s.into());
+        self.next_at = Some(Instant::now() + delay);
+        Some((delay, self.play_gen))
+    }
+
+    /// Fire a scheduled advance unless playback changed since it was armed.
+    pub fn advance_if_current(&mut self, token: u64) {
+        if token == self.play_gen {
+            self.on_finished();
+        }
+    }
+
+    /// Time left before the pending auto-advance, if one is armed.
+    pub fn next_in(&self) -> Option<Duration> {
+        self.next_at
+            .map(|t| t.saturating_duration_since(Instant::now()))
+    }
+
+    /// Append a library entry to the queue (ignored if already queued).
+    pub fn add_to_queue(&mut self, idx: usize) -> bool {
+        if idx >= self.entries.len() || self.queue_items.contains(&idx) {
+            return false;
+        }
+        self.queue.push(idx);
+        self.queue_items.push(idx);
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// Remove a library entry from the queue; a playing song keeps playing.
+    pub fn remove_from_queue(&mut self, idx: usize) {
+        let Some(pos) = self.queue_items.iter().position(|&i| i == idx) else {
+            return;
+        };
+        self.queue.remove(pos);
+        self.queue_items.remove(pos);
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Advance song when player thread reports playback finished.
@@ -1083,6 +1149,91 @@ mod tests {
             PlayState::Idle,
             Duration::from_millis(500)
         ));
+    }
+
+    fn three_song_controller(temp_dir: &TestTempDir, settings: Settings) -> Controller<MockOut> {
+        let lib_dir = temp_dir.path().join("midi");
+        fs::create_dir_all(&lib_dir).unwrap();
+        for name in ["a.mid", "b.mid", "c.mid"] {
+            write_test_midi(
+                &lib_dir.join(name),
+                &[(0, 0x90, 60, 64), (100, 0x80, 60, 0)],
+            );
+        }
+        Controller::new(
+            Settings {
+                library_dir: Some(lib_dir),
+                ..settings
+            },
+            temp_dir.path().join("settings.json"),
+            |_| MockOut {
+                recorder: MockRecorder::default(),
+            },
+            |_| {},
+        )
+    }
+
+    #[test]
+    fn test_schedule_advance_respects_auto_next_and_delay() {
+        let temp_dir = TestTempDir::new();
+        let mut controller = three_song_controller(
+            &temp_dir,
+            Settings {
+                auto_next: false,
+                ..Default::default()
+            },
+        );
+        controller.play_entry(0, vec![0, 1, 2]);
+        assert!(controller.schedule_advance().is_none());
+
+        // Repeat One still loops with auto-next off
+        controller.set_repeat(Repeat::One);
+        assert!(controller.schedule_advance().is_some());
+        controller.set_repeat(Repeat::Off);
+
+        controller.update_settings(|s| {
+            s.auto_next = true;
+            s.next_delay_s = 7;
+        });
+        let (delay, token) = controller.schedule_advance().expect("armed");
+        assert_eq!(delay, Duration::from_secs(7));
+        assert!(controller.next_in().is_some());
+        controller.advance_if_current(token);
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
+        assert!(controller.next_in().is_none());
+
+        // A user action during the gap cancels the pending advance
+        let (_, token) = controller.schedule_advance().expect("armed");
+        controller.seek(0);
+        controller.advance_if_current(token);
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
+    }
+
+    #[test]
+    fn test_queue_add_remove_and_play_queue() {
+        let temp_dir = TestTempDir::new();
+        let mut controller = three_song_controller(&temp_dir, Settings::default());
+
+        assert!(controller.add_to_queue(2));
+        assert!(controller.add_to_queue(0));
+        assert!(!controller.add_to_queue(2), "duplicates are ignored");
+        assert!(!controller.add_to_queue(99), "out of range is ignored");
+        assert_eq!(controller.queue_items(), &[2, 0]);
+
+        // Play with nothing loaded starts the queue, not the library
+        controller.toggle();
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(2));
+
+        controller.add_to_queue(1);
+        controller.remove_from_queue(0);
+        assert_eq!(controller.queue_items(), &[2, 1]);
+        controller.next();
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
+
+        // Removing the playing song keeps it playing
+        controller.remove_from_queue(1);
+        assert_eq!(controller.queue_items(), &[2]);
+        assert_eq!(controller.now_playing().and_then(|np| np.entry), Some(1));
     }
 
     #[test]

@@ -68,16 +68,26 @@ fn main() -> eframe::Result<()> {
             let spawned = thread::Builder::new()
                 .name("player-finished-worker".to_string())
                 .spawn(move || {
+                    let lock_with = |f: &mut dyn FnMut(&mut Controller<Output>)| {
+                        let strong = weak_controller.upgrade()?;
+                        f(&mut strong.lock().unwrap_or_else(|e| e.into_inner()));
+                        Some(())
+                    };
                     while finish_rx.recv().is_ok() {
-                        if let Some(strong) = weak_controller.upgrade() {
-                            strong
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .on_finished();
-                            ctx_finished.request_repaint();
-                        } else {
+                        let mut plan = None;
+                        if lock_with(&mut |c| plan = c.schedule_advance()).is_none() {
                             break;
                         }
+                        let Some((delay, token)) = plan else {
+                            continue;
+                        };
+                        ctx_finished.request_repaint();
+                        // Wait without the lock so the UI and hotkeys stay responsive.
+                        thread::sleep(delay);
+                        if lock_with(&mut |c| c.advance_if_current(token)).is_none() {
+                            break;
+                        }
+                        ctx_finished.request_repaint();
                     }
                 });
             if spawned.is_err() {

@@ -31,6 +31,20 @@ pub enum Repeat {
     All,
 }
 
+/// Library list order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SortOrder {
+    /// Title A to Z.
+    #[default]
+    NameAsc,
+    /// Title Z to A.
+    NameDesc,
+    /// File extension, then title.
+    Type,
+    /// Last modified, newest first.
+    Date,
+}
+
 /// UI color theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Theme {
@@ -109,6 +123,12 @@ pub struct Settings {
     pub repeat: Repeat,
     /// Enable playlist shuffle.
     pub shuffle: bool,
+    /// Start the next song automatically when one ends.
+    pub auto_next: bool,
+    /// Seconds to wait between songs (0..=60).
+    pub next_delay_s: u16,
+    /// Library list order.
+    pub sort: SortOrder,
     /// UI theme setting.
     pub theme: Theme,
     /// Global hotkey mappings.
@@ -139,6 +159,9 @@ impl Default for Settings {
             favorites: Vec::new(),
             repeat: Repeat::Off,
             shuffle: false,
+            auto_next: true,
+            next_delay_s: 0,
+            sort: SortOrder::NameAsc,
             theme: Theme::Light,
             hotkeys: Hotkeys::default(),
         }
@@ -164,6 +187,7 @@ impl Settings {
 
         self.modifier_delay_ms = self.modifier_delay_ms.clamp(0, 50);
         self.key_hold_ms = self.key_hold_ms.clamp(5, 200);
+        self.next_delay_s = self.next_delay_s.min(60);
 
         let mut seen = HashSet::new();
         let mut clean_keywords = Vec::new();

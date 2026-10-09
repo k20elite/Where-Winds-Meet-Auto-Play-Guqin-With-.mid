@@ -85,7 +85,7 @@ Switch modes live with `PageUp` / `PageDown`. Combine them with the **octave** b
   <img src="docs/search.png" alt="Accent-free search: 'cao son' finds Cao Sơn Lưu Thủy" width="548" />
 </p>
 
-Star your favorites, build a queue, then play it once, repeat a song, repeat the whole list, or shuffle.
+Sort by name (A–Z or Z–A), file type, or date. Star your favorites and add songs to the queue with **+**. Remove them with **×** in the Queue tab. Play the queue once, repeat a song, repeat the whole list, or shuffle. Turn **Auto-play** off to stop after each song, or set a **Gap** of up to 60 seconds between songs.
 
 ### Make it yours
 
@@ -197,7 +197,7 @@ lõm xuống và hiện chấm đỏ.
   <img src="docs/search.png" alt="Tìm không dấu: 'cao son' ra Cao Sơn Lưu Thủy" width="548" />
 </p>
 
-Gắn sao bài yêu thích, xếp hàng chờ, rồi phát một lần, lặp một bài, lặp cả danh sách hoặc phát ngẫu nhiên.
+Sắp xếp theo tên (A–Z hoặc Z–A), loại file hoặc ngày. Gắn sao bài yêu thích và thêm bài vào hàng chờ bằng nút **+**. Xoá bài bằng nút **×** trong tab Queue. Phát hàng chờ một lần, lặp một bài, lặp cả danh sách hoặc phát ngẫu nhiên. Tắt **Auto-play** để dừng sau mỗi bài, hoặc đặt **Gap** nghỉ tối đa 60 giây giữa các bài.
 
 ### Tùy chỉnh theo ý bạn
 
