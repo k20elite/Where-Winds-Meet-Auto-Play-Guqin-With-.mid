@@ -29,7 +29,17 @@ pub enum KeyMode {
     Natural21,
     /// 36 keys with Shift and Ctrl modifiers for chromatic accidentals.
     Chromatic36,
+    /// Roblox 61-key piano (C2..=C7): 36 white keys `1..0 q..p a..l z..m`, black keys are
+    /// Shift + the white key on their left.
+    Roblox61,
 }
+
+/// Lowest note on the Roblox piano (C2, key `1`).
+pub const ROBLOX_LOW: u8 = 36;
+/// Highest note on the Roblox piano (C7, key `m`).
+pub const ROBLOX_HIGH: u8 = 96;
+/// Roblox piano white keys, lowest first (slot = index).
+pub const ROBLOX_KEYS: &str = "1234567890qwertyuiopasdfghjklzxcvbnm";
 
 /// Strategy for mapping out-of-scale or out-of-range notes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -65,6 +75,16 @@ impl NoteMode {
             NoteMode::Pentatonic => "Pentatonic",
             NoteMode::Spread => "Spread",
             NoteMode::Melody => "Melody",
+        }
+    }
+
+    /// Label as it applies to a key mode (the piano reuses the modes with its own meaning).
+    pub fn label_for(self, key_mode: KeyMode) -> &'static str {
+        match (key_mode, self) {
+            (KeyMode::Roblox61, NoteMode::Nearest) => "Exact",
+            (KeyMode::Roblox61, NoteMode::SnapUp) => "White keys",
+            (KeyMode::Roblox61, NoteMode::Spread) => "Compact",
+            _ => self.label(),
         }
     }
 
@@ -200,7 +220,68 @@ impl Mapper {
                     })
                 }
             },
+            KeyMode::Roblox61 => Some(self.map_roblox(eff)),
         }
+    }
+
+    /// Roblox piano: slot = white key index (0..=35), Shift = the black key above it.
+    /// - Exact (Nearest): every note as written, out-of-range notes folded by octaves.
+    /// - White keys (SnapUp): accidentals snap up to the next white key, no Shift needed.
+    /// - Pentatonic: white keys snapped to do re mi so la.
+    /// - Compact (Spread): exact, folded into the middle three octaves (C3..=C6).
+    /// - Melody: exact, folded into the upper half (C4..=C7).
+    fn map_roblox(&self, eff: u8) -> Stroke {
+        let (lo, hi) = match self.note_mode {
+            NoteMode::Spread => (48, 84),
+            NoteMode::Melody => (60, ROBLOX_HIGH),
+            _ => (ROBLOX_LOW, ROBLOX_HIGH),
+        };
+        let rel = fold_octave_range(eff, lo, hi) - ROBLOX_LOW;
+        let (octave, pc) = (rel / 12, rel % 12);
+        match self.note_mode {
+            NoteMode::SnapUp => Stroke {
+                slot: octave * 7 + snap_pc_natural(pc, true),
+                modifier: Modifier::None,
+            },
+            NoteMode::Pentatonic => {
+                // B snaps up to the next C; B6 lands on C7, the top key (slot 35).
+                let (deg, row_offset) = snap_pc_pentatonic(pc);
+                Stroke {
+                    slot: (octave + row_offset as u8) * 7 + deg,
+                    modifier: Modifier::None,
+                }
+            }
+            _ => {
+                let (deg, black) = piano_key(pc);
+                Stroke {
+                    slot: octave * 7 + deg,
+                    modifier: if black {
+                        Modifier::Shift
+                    } else {
+                        Modifier::None
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Pitch class to (white key degree 0..=6, is black key). A black key is the white key
+/// below it plus Shift, matching the Roblox piano layout.
+fn piano_key(pc: u8) -> (u8, bool) {
+    match pc {
+        0 => (0, false),
+        1 => (0, true),
+        2 => (1, false),
+        3 => (1, true),
+        4 => (2, false),
+        5 => (3, false),
+        6 => (3, true),
+        7 => (4, false),
+        8 => (4, true),
+        9 => (5, false),
+        10 => (5, true),
+        _ => (6, false),
     }
 }
 
@@ -467,14 +548,142 @@ pub fn auto_transpose(events: &[NoteEvent], key_mode: KeyMode) -> i8 {
                 }
             }
         }
+        KeyMode::Roblox61 => return roblox_transpose(events),
     }
 
     best_shift
 }
 
+/// Roblox piano: every pitch is playable, so pick the shift that (in order) keeps the most
+/// notes inside C2..=C7, needs the fewest Shift (black key) presses, is smallest, and is
+/// positive over negative.
+fn roblox_transpose(events: &[NoteEvent]) -> i8 {
+    let mut note_counts = [0u64; 128];
+    for e in events.iter().filter(|e| e.on) {
+        note_counts[(e.note & 0x7f) as usize] += 1;
+    }
+    let mut best: Option<((u64, u64, u8, bool), i8)> = None;
+    for shift in -6i8..=6 {
+        let (mut outside, mut black) = (0u64, 0u64);
+        for (pitch, &count) in note_counts.iter().enumerate().filter(|(_, &c)| c > 0) {
+            let shifted = pitch as i32 + shift as i32;
+            if !(ROBLOX_LOW as i32..=ROBLOX_HIGH as i32).contains(&shifted) {
+                outside += count;
+            }
+            if matches!(shifted.rem_euclid(12), 1 | 3 | 6 | 8 | 10) {
+                black += count;
+            }
+        }
+        let key = (outside, black, shift.unsigned_abs(), shift < 0);
+        if best.is_none_or(|(b, _)| key < b) {
+            best = Some((key, shift));
+        }
+    }
+    // With no notes every shift ties on (0, 0), so the smallest one (0) wins.
+    best.map_or(0, |(_, shift)| shift)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn roblox(note_mode: NoteMode) -> Mapper {
+        Mapper {
+            note_mode,
+            key_mode: KeyMode::Roblox61,
+            transpose: 0,
+            octave: 0,
+        }
+    }
+
+    fn on(notes: &[u8]) -> Vec<NoteEvent> {
+        notes
+            .iter()
+            .map(|&note| NoteEvent {
+                time_us: 0,
+                note,
+                on: true,
+                track: 0,
+                channel: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_roblox_exact_layout() {
+        let m = roblox(NoteMode::Nearest);
+        let key = |note| {
+            let s = m.map(note).unwrap();
+            let c = ROBLOX_KEYS.as_bytes()[s.slot as usize] as char;
+            (c, s.modifier == Modifier::Shift)
+        };
+        assert_eq!(key(36), ('1', false)); // C2
+        assert_eq!(key(37), ('1', true)); // C#2 = Shift+1 (!)
+        assert_eq!(key(39), ('2', true)); // D#2 = Shift+2 (@)
+        assert_eq!(key(42), ('4', true)); // F#2 = Shift+4 ($)
+        assert_eq!(key(60), ('t', false)); // C4 (middle C)
+        assert_eq!(key(61), ('t', true)); // C#4 = T
+        assert_eq!(key(70), ('p', true)); // A#4 = P
+        assert_eq!(key(90), ('c', true)); // F#6 = C
+        assert_eq!(key(94), ('b', true)); // A#6 = B
+        assert_eq!(key(95), ('n', false)); // B6
+        assert_eq!(key(96), ('m', false)); // C7
+
+        // Out of range folds by octaves.
+        assert_eq!(key(24), ('1', false));
+        assert_eq!(key(108), ('m', false)); // C8 -> C7
+        assert_eq!(key(98), ('z', false)); // D7 -> D6
+    }
+
+    #[test]
+    fn test_roblox_modes_stay_on_keyboard() {
+        for &mode in NoteMode::ALL.iter() {
+            let m = roblox(mode);
+            for note in 0..=127 {
+                let s = m.map(note).unwrap();
+                assert!(s.slot <= 35, "mode {mode:?}, note {note}, slot {}", s.slot);
+                // There is no black key above E or B (degrees 2 and 6) or above the top C.
+                if s.modifier == Modifier::Shift {
+                    assert!(!matches!(s.slot % 7, 2 | 6) && s.slot < 35);
+                }
+                assert_ne!(s.modifier, Modifier::Ctrl);
+            }
+        }
+        for mode in [NoteMode::SnapUp, NoteMode::Pentatonic] {
+            let m = roblox(mode);
+            assert!((0..=127).all(|n| m.map(n).unwrap().modifier == Modifier::None));
+        }
+        assert_eq!(roblox(NoteMode::SnapUp).map(61).unwrap().slot, 15); // C#4 -> D4
+        assert_eq!(roblox(NoteMode::Pentatonic).map(95).unwrap().slot, 35); // B6 -> C7
+        assert!(roblox(NoteMode::Melody).map(40).unwrap().slot >= 14);
+        let compact = roblox(NoteMode::Spread);
+        assert!((0..=127).all(|n| (7..=28).contains(&compact.map(n).unwrap().slot)));
+    }
+
+    #[test]
+    fn test_roblox_auto_transpose() {
+        assert_eq!(auto_transpose(&[], KeyMode::Roblox61), 0);
+        // C major: nothing to fix.
+        assert_eq!(
+            auto_transpose(&on(&[60, 62, 64, 65, 67, 69, 71]), KeyMode::Roblox61),
+            0
+        );
+        // D major: -2 removes every black key.
+        assert_eq!(
+            auto_transpose(&on(&[62, 64, 66, 67, 69, 71, 73]), KeyMode::Roblox61),
+            -2
+        );
+        // Keeping notes in range beats avoiding black keys: 97 (C#7) is out of range,
+        // shifting down by 1 brings it to C7.
+        assert_eq!(auto_transpose(&on(&[97, 97, 60]), KeyMode::Roblox61), -1);
+    }
+
+    #[test]
+    fn test_roblox_labels() {
+        assert_eq!(NoteMode::Nearest.label_for(KeyMode::Roblox61), "Exact");
+        assert_eq!(NoteMode::Nearest.label_for(KeyMode::Natural21), "Nearest");
+        assert_eq!(ROBLOX_KEYS.len(), 36);
+    }
 
     #[test]
     fn test_note_mode_cycling() {

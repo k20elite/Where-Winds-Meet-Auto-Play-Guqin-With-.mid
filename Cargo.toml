@@ -1,11 +1,19 @@
 [package]
 name = "wwm-guqin"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
+
+[lib]
+name = "wwm_guqin"
+path = "src/lib.rs"
 
 [[bin]]
 name = "wwm-guqin"
 path = "src/main.rs"
+
+[[bin]]
+name = "roblox-piano"
+path = "src/bin/roblox-piano.rs"
 
 [dependencies]
 eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts"] }

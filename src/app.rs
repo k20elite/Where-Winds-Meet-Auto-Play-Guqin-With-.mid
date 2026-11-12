@@ -2,17 +2,18 @@
 //! one snapshot per frame and pushes `UiAction`s, applied afterwards under a single lock.
 
 use crate::controller::{Controller, Shared};
+use crate::edition::Edition;
 use crate::hotkeys::{self, Action, HotkeyThread};
 use crate::input::{GameWindow, Output};
 use crate::layout::{KeyLayout, LayoutPreset};
 use crate::library;
-use crate::mapping::{KeyMode, NoteMode};
+use crate::mapping::{KeyMode, NoteMode, ROBLOX_KEYS};
 use crate::neu::{self, NeuButton, Palette};
 use crate::player::PlayState;
 use crate::settings::{Hotkeys, InputBackend, Repeat, Settings, SortOrder, Theme};
 use eframe::egui::{
-    self, Align, Align2, CornerRadius, FontId, Frame, Id, Layout, Order, Pos2, Rect, RichText,
-    ScrollArea, Sense, Ui, Vec2,
+    self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id, Layout, Margin, Order, Pos2,
+    Rect, RichText, ScrollArea, Sense, Ui, Vec2,
 };
 use std::sync::atomic::Ordering;
 use std::sync::MutexGuard;
@@ -83,7 +84,10 @@ struct Snapshot {
     state: PlayState,
     pos_us: u64,
     dur_us: u64,
-    active_slots: u32,
+    /// Slots pressed without a modifier (bit index = slot).
+    active_plain: u64,
+    /// Slots pressed with Shift or Ctrl (bit index = slot).
+    active_modified: u64,
     note_mode: NoteMode,
     key_mode: KeyMode,
     octave: i8,
@@ -123,6 +127,7 @@ struct Toast {
 
 /// The application window.
 pub struct App {
+    edition: Edition,
     controller: Shared<Output>,
     hotkey_thread: Option<HotkeyThread>,
     toasts: Vec<Toast>,
@@ -191,6 +196,7 @@ fn action_index(a: Action) -> usize {
 impl App {
     /// Build the app; `notice` and `hotkey_failures` are shown as toasts.
     pub fn new(
+        edition: Edition,
         controller: Shared<Output>,
         hotkey_thread: Option<HotkeyThread>,
         notice: Option<String>,
@@ -206,6 +212,7 @@ impl App {
             )
         };
         let mut app = Self {
+            edition,
             controller,
             hotkey_thread,
             toasts: Vec::new(),
@@ -275,7 +282,8 @@ impl App {
             state: status.state(),
             pos_us: status.position_us.load(Ordering::Relaxed),
             dur_us: status.duration_us.load(Ordering::Relaxed),
-            active_slots: status.active_slots.load(Ordering::Relaxed),
+            active_plain: status.active_plain.load(Ordering::Relaxed),
+            active_modified: status.active_modified.load(Ordering::Relaxed),
             note_mode: s.note_mode,
             key_mode: s.key_mode,
             octave: s.octave,
@@ -488,12 +496,26 @@ impl eframe::App for App {
         }
 
         let mut actions = Vec::new();
+        if snap.key_mode == KeyMode::Roblox61 {
+            // Full window width so all 61 keys stay readable, like an on-screen piano.
+            egui::Panel::bottom("piano")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(Frame::NONE.fill(pal.base).inner_margin(Margin {
+                    left: 32,
+                    right: 32,
+                    top: 4,
+                    bottom: 24,
+                }))
+                .show(ui, |ui| piano_card(ui, &pal, &snap));
+        }
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(pal.base).inner_margin(20.0))
             .show(ui, |ui| {
                 header(
                     ui,
                     &pal,
+                    self.edition.title(),
                     &snap,
                     game_found,
                     &mut actions,
@@ -523,6 +545,7 @@ impl eframe::App for App {
 fn header(
     ui: &mut Ui,
     pal: &Palette,
+    title: &str,
     snap: &Snapshot,
     game_found: bool,
     actions: &mut Vec<UiAction>,
@@ -530,7 +553,7 @@ fn header(
 ) {
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new("WWM Guqin Freeplay")
+            RichText::new(title)
                 .font(FontId::proportional(22.0))
                 .strong()
                 .color(pal.text),
@@ -597,7 +620,10 @@ impl App {
                                 ui.add_space(22.0);
                                 controls_card(ui, pal, snap, actions);
                                 ui.add_space(22.0);
-                                keyboard_card(ui, pal, snap, self.reduced_motion);
+                                // The Roblox piano sits in its own full-width bottom panel.
+                                if snap.key_mode != KeyMode::Roblox61 {
+                                    keyboard_card(ui, pal, snap, self.reduced_motion);
+                                }
                                 if !snap.tracks.is_empty() {
                                     ui.add_space(22.0);
                                     tracks_card(ui, pal, snap, &mut self.tracks_open, actions);
@@ -777,7 +803,7 @@ impl App {
         self.settings_open = open;
     }
 
-    fn settings_body(
+    fn layout_settings(
         &mut self,
         ui: &mut Ui,
         pal: &Palette,
@@ -814,6 +840,18 @@ impl App {
                 Err(e) => error_line(ui, pal, &e.to_string()),
             }
         }
+    }
+
+    fn settings_body(
+        &mut self,
+        ui: &mut Ui,
+        pal: &Palette,
+        snap: &Snapshot,
+        actions: &mut Vec<UiAction>,
+    ) {
+        if self.edition == Edition::Guqin {
+            self.layout_settings(ui, pal, snap, actions);
+        }
 
         section(ui, pal, "Input");
         ui.horizontal_wrapped(|ui| {
@@ -834,7 +872,11 @@ impl App {
             hint(
                 ui,
                 pal,
-                "Background mode posts keys to the game window; Shift/Ctrl may not register.",
+                if self.edition == Edition::Roblox {
+                    "Roblox usually ignores background keys; use Global and keep Roblox focused."
+                } else {
+                    "Background mode posts keys to the game window; Shift/Ctrl may not register."
+                },
             );
         }
         ui.add_space(8.0);
@@ -1126,29 +1168,37 @@ fn stepper(
     out
 }
 
+fn key_mode_row(ui: &mut Ui, pal: &Palette, snap: &Snapshot, actions: &mut Vec<UiAction>) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        row_label(ui, pal, "Keys", 86.0);
+        for (mode, name) in [
+            (KeyMode::Natural21, "21 keys"),
+            (KeyMode::Chromatic36, "36 keys"),
+        ] {
+            if ui
+                .add(NeuButton::new(name, *pal).selected(snap.key_mode == mode))
+                .clicked()
+                && snap.key_mode != mode
+            {
+                actions.push(UiAction::KeyMode(mode));
+            }
+            ui.add_space(6.0);
+        }
+    });
+}
+
 fn controls_card(ui: &mut Ui, pal: &Palette, snap: &Snapshot, actions: &mut Vec<UiAction>) {
     neu::neu_card(ui, pal, |ui| {
         card_title(ui, pal, "SOUND");
-        if let Some(d) = stepper(ui, pal, "Mode", snap.note_mode.label(), true) {
+        let mode = snap.note_mode.label_for(snap.key_mode);
+        if let Some(d) = stepper(ui, pal, "Mode", mode, true) {
             actions.push(UiAction::CycleMode(d));
         }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            row_label(ui, pal, "Keys", 86.0);
-            for (mode, name) in [
-                (KeyMode::Natural21, "21 keys"),
-                (KeyMode::Chromatic36, "36 keys"),
-            ] {
-                if ui
-                    .add(NeuButton::new(name, *pal).selected(snap.key_mode == mode))
-                    .clicked()
-                    && snap.key_mode != mode
-                {
-                    actions.push(UiAction::KeyMode(mode));
-                }
-                ui.add_space(6.0);
-            }
-        });
+        // The piano has a single 61-key layout; only the guqin offers a choice.
+        if snap.key_mode != KeyMode::Roblox61 {
+            key_mode_row(ui, pal, snap, actions);
+        }
         ui.add_space(8.0);
         let octave = format!("{:+}", snap.octave);
         if let Some(d) = stepper(ui, pal, "Octave", &octave, true) {
@@ -1236,7 +1286,7 @@ fn keyboard_card(ui: &mut Ui, pal: &Palette, snap: &Snapshot, reduced_motion: bo
                 ui.spacing_mut().item_spacing.x = gap;
                 for degree in 0..7u8 {
                     let slot = row * 7 + degree;
-                    let active = snap.active_slots & (1 << slot) != 0;
+                    let active = (snap.active_plain | snap.active_modified) & (1 << slot) != 0;
                     key_tile(
                         ui,
                         pal,
@@ -1249,6 +1299,137 @@ fn keyboard_card(ui: &mut Ui, pal: &Palette, snap: &Snapshot, reduced_motion: bo
                 }
             });
             ui.add_space(gap);
+        }
+    });
+}
+
+/// Label printed on a Roblox black key: what Shift + the white key on its left types.
+fn shifted_label(white: char) -> char {
+    match white {
+        '1' => '!',
+        '2' => '@',
+        '3' => '#',
+        '4' => '$',
+        '5' => '%',
+        '6' => '^',
+        '7' => '&',
+        '8' => '*',
+        '9' => '(',
+        '0' => ')',
+        c => c.to_ascii_uppercase(),
+    }
+}
+
+/// True if a black key sits right above white slot `slot` (after C, D, F, G and A).
+fn has_black_key(slot: usize) -> bool {
+    slot + 1 < ROBLOX_KEYS.len() && !matches!(slot % 7, 2 | 6)
+}
+
+/// The Roblox 61-key piano (C2..=C7): 36 white keys `1..m`, black keys = Shift + the
+/// white key on their left. Keys light up while the player holds them.
+fn piano_card(ui: &mut Ui, pal: &Palette, snap: &Snapshot) {
+    neu::neu_card(ui, pal, |ui| {
+        ui.horizontal(|ui| {
+            card_title(ui, pal, "PIANO · 61 KEYS");
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                hint(ui, pal, "Black keys = Shift + key   ·   middle C = T");
+            });
+        });
+        let whites: Vec<char> = ROBLOX_KEYS.chars().collect();
+        let gap = 2.0;
+        let count = whites.len() as f32;
+        let white_w = ((ui.available_width() - gap * (count - 1.0)) / count).max(10.0);
+        let white_h = (white_w * 4.4).clamp(96.0, 150.0);
+        let width = white_w * count + gap * (count - 1.0);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, white_h), Sense::hover());
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let painter = ui.painter_at(rect.expand(8.0));
+        let light_theme = pal.base.r() > 128;
+        // Black keys stay dark in both themes; their labels use the lighter text colour.
+        let (black_fill, black_text) = if light_theme {
+            (pal.text, pal.base)
+        } else {
+            (Color32::from_rgb(0x1b, 0x1e, 0x23), pal.text)
+        };
+        let label_size = (white_w * 0.5).clamp(9.0, 14.0);
+        let white_rect = |i: usize| {
+            Rect::from_min_size(
+                rect.min + Vec2::new(i as f32 * (white_w + gap), 0.0),
+                Vec2::new(white_w, white_h),
+            )
+        };
+
+        for (i, &key) in whites.iter().enumerate() {
+            let r = white_rect(i);
+            let active = snap.active_plain & (1 << i) != 0;
+            let cr = CornerRadius {
+                nw: 2,
+                ne: 2,
+                sw: 6,
+                se: 6,
+            };
+            if active {
+                neu::paint_inset(&painter, r, cr, pal, 0.5);
+                let bar = Rect::from_min_size(
+                    Pos2::new(r.left() + 3.0, r.bottom() - 6.0),
+                    Vec2::new(r.width() - 6.0, 3.0),
+                );
+                painter.rect_filled(bar, CornerRadius::same(2), pal.accent);
+            } else {
+                neu::paint_raised(&painter, r, cr, pal, 0.25);
+            }
+            painter.text(
+                Pos2::new(r.center().x, r.bottom() - 16.0),
+                Align2::CENTER_CENTER,
+                key.to_string(),
+                FontId::proportional(label_size),
+                if active { pal.accent } else { pal.text },
+            );
+            // Octave names on every C: key 1 = C2 ... key m = C7.
+            if i % 7 == 0 {
+                painter.text(
+                    Pos2::new(r.center().x, r.bottom() - 32.0),
+                    Align2::CENTER_CENTER,
+                    format!("C{}", i / 7 + 2),
+                    FontId::proportional((label_size * 0.75).max(8.0)),
+                    pal.text_secondary,
+                );
+            }
+        }
+
+        let black_w = white_w * 0.64;
+        let black_h = white_h * 0.6;
+        for (i, &key) in whites.iter().enumerate() {
+            if !has_black_key(i) {
+                continue;
+            }
+            let x = white_rect(i).right() + gap * 0.5;
+            let r = Rect::from_min_size(
+                Pos2::new(x - black_w * 0.5, rect.top()),
+                Vec2::new(black_w, black_h),
+            );
+            let active = snap.active_modified & (1 << i) != 0;
+            let cr = CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: 4,
+                se: 4,
+            };
+            let (fill, text) = if active {
+                (pal.accent, pal.on_accent)
+            } else {
+                (black_fill, black_text)
+            };
+            painter.rect_filled(r, cr, fill);
+            painter.text(
+                Pos2::new(r.center().x, r.bottom() - 12.0),
+                Align2::CENTER_CENTER,
+                shifted_label(key).to_string(),
+                FontId::proportional((label_size * 0.85).max(8.0)),
+                text,
+            );
         }
     });
 }

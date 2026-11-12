@@ -438,10 +438,16 @@ impl<O: Out + Send + 'static> Controller<O> {
         self.set_note_mode(new_mode);
     }
 
-    /// Set keyboard mode (Natural21 / Chromatic36).
+    /// Set keyboard mode (Natural21 / Chromatic36 / Roblox61).
     pub fn set_key_mode(&mut self, mode: KeyMode) {
+        let rebuild = (self.settings.key_mode == KeyMode::Roblox61) != (mode == KeyMode::Roblox61);
         self.settings.key_mode = mode;
         self.dirty = true;
+        if rebuild {
+            // The piano and the guqin use different key tables.
+            self.player
+                .send(Cmd::Output((self.make_output)(&self.settings)));
+        }
         if let Some(np) = &mut self.now_playing {
             np.auto_shift = Self::compute_auto_shift(&np.song, &np.tracks, self.settings.key_mode);
         }

@@ -1,7 +1,7 @@
 //! Windows keyboard output and game-window discovery.
 
 use crate::layout::KeyLayout;
-use crate::mapping::{Modifier, Stroke};
+use crate::mapping::{KeyMode, Modifier, Stroke, ROBLOX_KEYS};
 use crate::settings::{InputBackend, Settings};
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -309,30 +309,39 @@ impl KeySink for GlobalSink {
 /// Stroke driver translating musical strokes to keyboard events.
 pub struct Driver<S: KeySink> {
     sink: S,
-    #[allow(dead_code)] // reason: retained for introspection and future layout updates
-    layout: KeyLayout,
     modifier_delay: Duration,
-    vks: [Option<u16>; 21],
+    /// Virtual key per slot.
+    vks: Vec<Option<u16>>,
     down_counts: HashMap<u16, u32>,
 }
 
-fn compute_vks(layout: &KeyLayout) -> [Option<u16>; 21] {
-    let mut vks = [None; 21];
-    for (i, item) in vks.iter_mut().enumerate() {
-        if let Some(c) = layout.key(i as u8) {
-            *item = char_to_vk(c);
-        }
-    }
-    vks
+fn compute_vks(layout: &KeyLayout) -> Vec<Option<u16>> {
+    layout.keys().iter().map(|&c| char_to_vk(c)).collect()
+}
+
+/// Roblox piano keys use fixed virtual keys ('0'..'9' and 'A'..'Z' are their own codes), so
+/// they do not depend on the active keyboard layout.
+fn roblox_vks() -> Vec<Option<u16>> {
+    ROBLOX_KEYS
+        .bytes()
+        .map(|b| Some(b.to_ascii_uppercase() as u16))
+        .collect()
 }
 
 impl<S: KeySink> Driver<S> {
     /// Create new Driver wrapping target sink.
     pub fn new(sink: S, layout: KeyLayout, modifier_delay: Duration) -> Self {
-        let vks = compute_vks(&layout);
+        Self::with_vks(sink, compute_vks(&layout), modifier_delay)
+    }
+
+    /// Driver for the Roblox 61-key piano (36 white-key slots).
+    pub fn roblox(sink: S, modifier_delay: Duration) -> Self {
+        Self::with_vks(sink, roblox_vks(), modifier_delay)
+    }
+
+    fn with_vks(sink: S, vks: Vec<Option<u16>>, modifier_delay: Duration) -> Self {
         Self {
             sink,
-            layout,
             modifier_delay,
             vks,
             down_counts: HashMap::new(),
@@ -343,7 +352,6 @@ impl<S: KeySink> Driver<S> {
     #[allow(dead_code)] // reason: dynamic layout reconfiguration API
     pub fn set_layout(&mut self, layout: KeyLayout) {
         self.vks = compute_vks(&layout);
-        self.layout = layout;
     }
 
     /// Update modifier delay before note key.
@@ -359,12 +367,7 @@ impl<S: KeySink> Driver<S> {
     }
 
     fn slot_vk(&self, slot: u8) -> Option<u16> {
-        let idx = slot as usize;
-        if idx < self.vks.len() {
-            self.vks[idx]
-        } else {
-            None
-        }
+        self.vks.get(slot as usize).copied().flatten()
     }
 
     /// Press a stroke with momentary modifiers if needed.
@@ -448,17 +451,20 @@ pub enum Output {
 impl Output {
     /// Create Output backend from application settings.
     pub fn from_settings(settings: &Settings) -> Self {
-        let layout = settings.key_layout();
-        let delay = Duration::from_millis(settings.modifier_delay_ms as u64);
+        fn driver<S: KeySink>(sink: S, settings: &Settings) -> Driver<S> {
+            let delay = Duration::from_millis(settings.modifier_delay_ms as u64);
+            if settings.key_mode == KeyMode::Roblox61 {
+                Driver::roblox(sink, delay)
+            } else {
+                Driver::new(sink, settings.key_layout(), delay)
+            }
+        }
         match settings.backend {
             InputBackend::Window => {
                 let sink = WindowSink::new(settings.window_keywords.clone());
-                Output::Window(Driver::new(sink, layout, delay))
+                Output::Window(driver(sink, settings))
             }
-            InputBackend::Global => {
-                let sink = GlobalSink::new();
-                Output::Global(Driver::new(sink, layout, delay))
-            }
+            InputBackend::Global => Output::Global(driver(GlobalSink::new(), settings)),
         }
     }
 
@@ -661,6 +667,44 @@ mod tests {
         driver.press(s);
         driver.release(s);
         assert!(driver.sink().events.is_empty());
+    }
+
+    #[test]
+    fn test_roblox_driver_black_key_is_shift_combo() {
+        let mut driver = Driver::roblox(MockSink::default(), Duration::ZERO);
+        let vk_1 = b'1' as u16;
+        let vk_m = b'M' as u16;
+        // C#2 = Shift + '1', then C7 = 'm'.
+        let black = Stroke {
+            slot: 0,
+            modifier: Modifier::Shift,
+        };
+        let top = Stroke {
+            slot: 35,
+            modifier: Modifier::None,
+        };
+        driver.press(black);
+        driver.press(top);
+        driver.release(black);
+        driver.release(top);
+        assert_eq!(
+            driver.sink().events,
+            vec![
+                (VK_SHIFT, true),
+                (vk_1, true),
+                (VK_SHIFT, false),
+                (vk_m, true),
+                (vk_1, false),
+                (vk_m, false),
+            ]
+        );
+        // No slot past the 36 white keys.
+        let before = driver.sink().events.len();
+        driver.press(Stroke {
+            slot: 36,
+            modifier: Modifier::None,
+        });
+        assert_eq!(driver.sink().events.len(), before);
     }
 
     #[test]

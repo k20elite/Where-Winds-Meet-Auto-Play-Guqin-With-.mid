@@ -1,9 +1,25 @@
 //! Playback engine and player thread for Guqin MIDI playback.
 
-use crate::mapping::{Mapper, Stroke};
+use crate::mapping::{Mapper, Modifier, Stroke};
 use crate::midi::Song;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+
+/// Slots per light bank (the Roblox piano has the most: 36 white keys).
+const SLOTS: usize = 36;
+
+/// Index into the key-light refcounts: plain strokes use `slot`, modified strokes (Shift or
+/// Ctrl) use `SLOTS + slot`, so the piano can light a black key apart from its white key.
+fn light_index(stroke: Stroke) -> Option<usize> {
+    let slot = stroke.slot as usize;
+    if slot >= SLOTS {
+        return None;
+    }
+    Some(match stroke.modifier {
+        Modifier::None => slot,
+        Modifier::Shift | Modifier::Ctrl => SLOTS + slot,
+    })
+}
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -71,7 +87,7 @@ pub struct Engine<O: Out> {
     speed: f32,
     hold: Duration,
     pending_releases: VecDeque<(Duration, Stroke)>,
-    slot_refcounts: [u32; 32],
+    slot_refcounts: [u32; 2 * SLOTS],
 }
 
 impl<O: Out> Engine<O> {
@@ -94,7 +110,7 @@ impl<O: Out> Engine<O> {
             speed: 1.0,
             hold: Duration::from_millis(25),
             pending_releases: VecDeque::with_capacity(64),
-            slot_refcounts: [0; 32],
+            slot_refcounts: [0; 2 * SLOTS],
         }
     }
 
@@ -241,15 +257,26 @@ impl<O: Out> Engine<O> {
         self.state
     }
 
-    /// Bitmask of currently pressed slots (0..=31, bit index = slot).
-    pub fn active_slots(&self) -> u32 {
-        let mut mask = 0u32;
-        for (slot, &count) in self.slot_refcounts.iter().enumerate() {
-            if count > 0 && slot < 32 {
-                mask |= 1 << slot;
+    /// Pressed slots as (plain, modified) bitmasks, bit index = slot.
+    pub fn active_split(&self) -> (u64, u64) {
+        let mut masks = (0u64, 0u64);
+        for (i, &count) in self.slot_refcounts.iter().enumerate() {
+            if count > 0 {
+                if i < SLOTS {
+                    masks.0 |= 1 << i;
+                } else {
+                    masks.1 |= 1 << (i - SLOTS);
+                }
             }
         }
-        mask
+        masks
+    }
+
+    /// Bitmask of currently pressed slots with or without a modifier (bit index = slot).
+    #[cfg(test)]
+    pub fn active_slots(&self) -> u64 {
+        let (plain, modified) = self.active_split();
+        plain | modified
     }
 
     /// Playback speed multiplier.
@@ -274,9 +301,8 @@ impl<O: Out> Engine<O> {
         while let Some(&(due, stroke)) = self.pending_releases.front() {
             if due <= now {
                 self.pending_releases.pop_front();
-                let slot = stroke.slot as usize;
-                if slot < self.slot_refcounts.len() && self.slot_refcounts[slot] > 0 {
-                    self.slot_refcounts[slot] -= 1;
+                if let Some(i) = light_index(stroke) {
+                    self.slot_refcounts[i] = self.slot_refcounts[i].saturating_sub(1);
                 }
                 self.out.release(stroke);
             } else {
@@ -291,8 +317,8 @@ impl<O: Out> Engine<O> {
                 let late_threshold_us = song_pos_us.saturating_sub(250_000);
 
                 let mut last_event_time_us = u64::MAX;
-                // Fixed bitset for up to 21 slots * 3 modifiers = 63 bits (< 64).
-                let mut chord_strokes = 0u64;
+                // Fixed bitset for up to 36 slots * 3 modifiers = 108 bits (< 128).
+                let mut chord_strokes = 0u128;
 
                 while self.cursor < song.events.len() {
                     let event = song.events[self.cursor];
@@ -326,12 +352,12 @@ impl<O: Out> Engine<O> {
                         }
 
                         let mod_idx = match stroke.modifier {
-                            crate::mapping::Modifier::None => 0u64,
-                            crate::mapping::Modifier::Shift => 1u64,
-                            crate::mapping::Modifier::Ctrl => 2u64,
+                            Modifier::None => 0u32,
+                            Modifier::Shift => 1,
+                            Modifier::Ctrl => 2,
                         };
-                        let stroke_key = (stroke.slot as u64) * 3 + mod_idx;
-                        let stroke_bit = 1u64 << (stroke_key % 64);
+                        let stroke_key = stroke.slot as u32 * 3 + mod_idx;
+                        let stroke_bit = 1u128 << (stroke_key % 128);
                         if (chord_strokes & stroke_bit) != 0 {
                             // Duplicate identical stroke at same timestamp in chord -> deduplicate.
                             continue;
@@ -339,9 +365,8 @@ impl<O: Out> Engine<O> {
                         chord_strokes |= stroke_bit;
 
                         self.out.press(stroke);
-                        let slot = stroke.slot as usize;
-                        if slot < self.slot_refcounts.len() {
-                            self.slot_refcounts[slot] += 1;
+                        if let Some(i) = light_index(stroke) {
+                            self.slot_refcounts[i] += 1;
                         }
                         self.pending_releases.push_back((now + self.hold, stroke));
                     }
@@ -387,8 +412,10 @@ pub struct SharedStatus {
     pub position_us: AtomicU64,
     /// Loaded song duration in microseconds.
     pub duration_us: AtomicU64,
-    /// Active slot bitmask.
-    pub active_slots: AtomicU32,
+    /// Slots pressed without a modifier (bitmask).
+    pub active_plain: AtomicU64,
+    /// Slots pressed with Shift or Ctrl (bitmask).
+    pub active_modified: AtomicU64,
     /// Playback speed * 100 as integer.
     pub speed_x100: AtomicU32,
 }
@@ -399,7 +426,8 @@ impl SharedStatus {
             state: AtomicU8::new(PlayState::Idle as u8),
             position_us: AtomicU64::new(0),
             duration_us: AtomicU64::new(0),
-            active_slots: AtomicU32::new(0),
+            active_plain: AtomicU64::new(0),
+            active_modified: AtomicU64::new(0),
             speed_x100: AtomicU32::new(100),
         }
     }
@@ -653,9 +681,9 @@ fn publish_status<O: Out>(engine: &Engine<O>, status: &Arc<SharedStatus>, now: D
         .store(engine.position_us(now), Ordering::Relaxed);
     let dur = engine.song.as_ref().map_or(0, |s| s.duration_us);
     status.duration_us.store(dur, Ordering::Relaxed);
-    status
-        .active_slots
-        .store(engine.active_slots(), Ordering::Relaxed);
+    let (plain, modified) = engine.active_split();
+    status.active_plain.store(plain, Ordering::Relaxed);
+    status.active_modified.store(modified, Ordering::Relaxed);
     status
         .speed_x100
         .store((engine.speed() * 100.0).round() as u32, Ordering::Relaxed);

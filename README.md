@@ -50,7 +50,7 @@ and a dot below marks the low octave. Keys sink in and get a red dot the moment 
 
 ### Quick start
 
-1. **Download** `wwm-guqin.exe` from the [latest release](https://github.com/k20elite/Where-Winds-Meet-Auto-Play-Guqin-With-.mid-/releases/latest). No installation is needed.
+1. **Download** `wwm-guqin.exe` from the [latest release](https://github.com/k20elite/Where-Winds-Meet-Auto-Play-Guqin-With-.mid-/releases/latest). No installation is needed. Playing Roblox piano? Take `roblox-piano.exe` instead.
 2. **Run it.** If the game runs as Administrator, run this tool as Administrator too, otherwise Windows blocks its key presses.
 3. Click **Choose folder** and select the folder with your `.mid` files.
 4. In game, open the guqin. Then click a song, or press **ScrollLock**.
@@ -114,6 +114,22 @@ Settings are saved in `wwm-guqin.json` next to the exe, so the whole folder can 
 | Hotkeys | ScrollLock only | **6 actions, all customisable** |
 | Source code | Not published | **Open in this repository** |
 
+### Roblox piano edition
+
+The same player also ships as **`roblox-piano.exe`** for Roblox piano games that use the 61-key
+Visual Pianos layout (C2–C7):
+
+- White keys are `1 2 3 … 0 q w e … p a s d … l z x c … m`; middle C is `t`.
+- Black keys are **Shift + the white key on their left**: `! @ $ % ^ * ( Q W E T Y I O P S D G H J L Z C V B`.
+- Every MIDI note plays exactly as written; notes outside C2–C7 are folded by octaves. Auto transpose
+  picks the shift that keeps the most notes in range and needs the fewest Shift presses.
+- Note modes for the piano: **Exact**, **White keys** (no Shift at all), **Pentatonic**, **Compact**
+  (C3–C6) and **Melody** (C4–C7).
+- Settings are kept in `roblox-piano.json`, separate from the guqin build. Use Global input and keep the
+  Roblox window focused while playing.
+
+<p align="center"><img src="docs/roblox-piano.png" width="760" alt="Roblox Piano Freeplay with the 61-key keyboard"></p>
+
 ### Troubleshooting
 
 - **No sound in game:** keep the game window focused while playing (Global mode). If the game runs as
@@ -127,8 +143,8 @@ Settings are saved in `wwm-guqin.json` next to the exe, so the whole folder can 
 ```bash
 git clone https://github.com/k20elite/Where-Winds-Meet-Auto-Play-Guqin-With-.mid-.git
 cd Where-Winds-Meet-Auto-Play-Guqin-With-.mid-
-cargo build --release          # → target/release/wwm-guqin.exe
-cargo test                     # 87 unit tests
+cargo build --release          # → target/release/wwm-guqin.exe and roblox-piano.exe
+cargo test                     # 98 unit tests
 ```
 
 ---
@@ -162,7 +178,7 @@ lõm xuống và hiện chấm đỏ.
 
 ### Bắt đầu nhanh
 
-1. **Tải** `wwm-guqin.exe` ở [bản phát hành mới nhất](https://github.com/k20elite/Where-Winds-Meet-Auto-Play-Guqin-With-.mid-/releases/latest). Không cần cài đặt.
+1. **Tải** `wwm-guqin.exe` ở [bản phát hành mới nhất](https://github.com/k20elite/Where-Winds-Meet-Auto-Play-Guqin-With-.mid-/releases/latest). Không cần cài đặt. Chơi piano Roblox? Tải `roblox-piano.exe`.
 2. **Mở file.** Nếu game chạy bằng quyền Administrator, hãy mở tool bằng quyền Administrator, nếu không Windows sẽ chặn phím.
 3. Bấm **Choose folder**, chọn thư mục chứa file `.mid`.
 4. Vào game, mở đàn. Bấm vào bài hát hoặc nhấn **ScrollLock**.
@@ -221,6 +237,22 @@ Cài đặt lưu trong `wwm-guqin.json` cạnh file exe, nên có thể chép c�
 | Track | Trộn chung | **Bật/tắt từng track, tự bỏ track trống** |
 | Phím tắt | Chỉ ScrollLock | **6 chức năng, đổi được hết** |
 | Mã nguồn | Không công khai | **Công khai trong repo này** |
+
+### Bản Roblox piano
+
+Cùng trình phát này có thêm **`roblox-piano.exe`** cho các game piano trên Roblox dùng layout 61 phím
+Visual Pianos (C2–C7):
+
+- Phím trắng là `1 2 3 … 0 q w e … p a s d … l z x c … m`; Đô giữa là `t`.
+- Phím đen là **Shift + phím trắng bên trái**: `! @ $ % ^ * ( Q W E T Y I O P S D G H J L Z C V B`.
+- Mọi nốt MIDI được đánh đúng cao độ; nốt ngoài C2–C7 được dời theo quãng tám. Tự dịch giọng chọn mức
+  giữ nhiều nốt trong tầm nhất và cần ít lần bấm Shift nhất.
+- Chế độ nốt cho piano: **Exact** (đúng nốt), **White keys** (chỉ phím trắng, không cần Shift),
+  **Pentatonic**, **Compact** (C3–C6) và **Melody** (C4–C7).
+- Cài đặt lưu trong `roblox-piano.json`, tách riêng với bản cổ cầm. Dùng chế độ Global và giữ cửa sổ
+  Roblox được chọn khi phát.
+
+<p align="center"><img src="docs/roblox-piano.png" width="760" alt="Roblox Piano Freeplay với bàn phím 61 phím"></p>
 
 ### Xử lý sự cố
 

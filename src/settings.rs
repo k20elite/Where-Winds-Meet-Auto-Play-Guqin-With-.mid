@@ -245,28 +245,28 @@ impl Settings {
         }
     }
 
-    /// Determine default settings path adjacent to current executable or working directory.
-    pub fn default_path() -> PathBuf {
+    /// Settings file `file_name` next to the current executable (or in the working directory).
+    pub fn default_path(file_name: &str) -> PathBuf {
         let exe_dir = env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()));
         match exe_dir {
-            Some(dir) => dir.join("wwm-guqin.json"),
-            None => PathBuf::from("wwm-guqin.json"),
+            Some(dir) => dir.join(file_name),
+            None => PathBuf::from(file_name),
         }
     }
 
-    /// Load settings from path; falls back to default on missing or corrupt files.
-    pub fn load(path: &Path) -> (Settings, Option<String>) {
+    /// Load settings from path; falls back to `defaults` on missing or corrupt files.
+    pub fn load(path: &Path, defaults: Settings) -> (Settings, Option<String>) {
         if !path.exists() {
-            return (Settings::default(), None);
+            return (defaults, None);
         }
 
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => {
                 let msg = "settings file unreadable, settings reset to default".to_string();
-                return (Settings::default(), Some(msg));
+                return (defaults, Some(msg));
             }
         };
 
@@ -277,7 +277,7 @@ impl Settings {
             }
             Err(_) => {
                 let msg = "corrupt JSON detected, settings reset to default".to_string();
-                (Settings::default(), Some(msg))
+                (defaults, Some(msg))
             }
         }
     }
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn test_missing_file_load() {
         let p = Path::new("non_existent_file_path_12345.json");
-        let (s, warn) = Settings::load(p);
+        let (s, warn) = Settings::load(p, Settings::default());
         assert_eq!(s, Settings::default());
         assert_eq!(warn, None);
     }
@@ -317,7 +317,7 @@ mod tests {
         let path = dir.join("test_corrupt.json");
         fs::write(&path, "{not json").unwrap();
 
-        let (s, warn) = Settings::load(&path);
+        let (s, warn) = Settings::load(&path, Settings::default());
         assert_eq!(s, Settings::default());
         let warn_msg = warn.expect("warning expected");
         assert!(warn_msg.contains("settings reset"));
@@ -336,7 +336,7 @@ mod tests {
         let path = dir.join("partial.json");
         fs::write(&path, "{\"speed\": 9.0}").unwrap();
 
-        let (s, warn) = Settings::load(&path);
+        let (s, warn) = Settings::load(&path, Settings::default());
         assert_eq!(warn, None);
         assert_eq!(s.speed, 2.0);
         assert_eq!(s.octave, 0);
@@ -419,7 +419,7 @@ mod tests {
             vec![std::ffi::OsString::from("test_settings.json")]
         );
 
-        let (loaded, warn) = Settings::load(&path);
+        let (loaded, warn) = Settings::load(&path, Settings::default());
         assert_eq!(warn, None);
         assert_eq!(original, loaded);
 
